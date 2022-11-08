@@ -5,6 +5,11 @@ import matplotlib.pyplot as plt
 
 
 @stencil(jit=True)
+def stencil_fill(value):
+    return value
+
+
+@stencil(jit=True)
 def stencil_mandelbrot(c_field_real, c_field_imag, num_iters):
     c_real = c_field_real[index()]
     c_imag = c_field_imag[index()]
@@ -24,6 +29,12 @@ def stencil_mandelbrot(c_field_real, c_field_imag, num_iters):
     return diverged_after
 
 
+def test_fill():
+    out = np.zeros(shape=(10, 10), dtype=float)
+    stencil_fill(1.0)(out)
+    assert np.allclose(out, 1.0)
+
+
 def test_mandelbrot():
     width = 200
     height = 100
@@ -39,4 +50,4 @@ def test_mandelbrot():
     #plt.show()
 
 
-test_mandelbrot()
+#test_mandelbrot()

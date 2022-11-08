@@ -15,6 +15,34 @@ def _generate_indices(shape: tuple[int, ...]) -> tuple[int, ...]:
                 yield i, *rest
 
 
+def _get_type(obj: Any) -> type:
+    try:
+        view = memoryview(obj)
+        if view.format == "f":
+            element_type = sir.ScalarType.FLOAT32
+        elif view.format == "d":
+            element_type = sir.ScalarType.FLOAT64
+        elif view.format == "?":
+            element_type = sir.ScalarType.SINT8
+        elif view.format == "i":
+            element_type = sir.ScalarType.SINT32
+        elif view.format == "l":
+            element_type = sir.ScalarType.SINT64
+        else:
+            raise NotImplementedError()
+        return sir.FieldType(element_type, view.ndim)
+    except:
+        ...
+
+    if isinstance(obj, int):
+        return sir.ScalarType.SINT64
+    elif isinstance(obj, float):
+        return sir.ScalarType.FLOAT64
+    elif isinstance(obj, bool):
+        return sir.ScalarType.SINT8
+    else:
+        raise NotImplementedError()
+
 
 @dataclass
 class _Stencil:
@@ -45,7 +73,7 @@ class _Stencil:
 
 @dataclass
 class _JitStencil:
-    stencil_ast: sir.Module
+    stencil: callable
 
     def __call__(self, *args, **kwargs):
         @dataclass
@@ -60,10 +88,15 @@ class _JitStencil:
         return Helper(self, inputs)
 
     def _execute(self, inputs, outputs):
-        print("JIT stencil is WIP")
+        input_types = [_get_type(inp) for inp in inputs]
+        output_types = [_get_type(outp) for outp in outputs]
+        stencil_ast = compiler.parse_function(self.stencil, input_types, output_types)
+        options = sir.CompileOptions(sir.TargetArch.X86, sir.OptimizationLevel.O3)
+        compiled_module: sir.CompiledModule = sir.compile(stencil_ast, options, True)
+        compiled_module.invoke("main", *inputs, *outputs)
 
 
 def stencil(jit: bool = False) -> _Stencil | _JitStencil:
     def stencil_chain(stencil_fun: callable):
-        return _Stencil(stencil_fun) if not jit else _JitStencil(compiler.translate_to_stencilir(stencil_fun))
+        return _Stencil(stencil_fun) if not jit else _JitStencil(stencil_fun)
     return stencil_chain
