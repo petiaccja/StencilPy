@@ -34,12 +34,12 @@ def _get_type(obj: Any) -> type:
     except:
         ...
 
-    if isinstance(obj, int):
+    if isinstance(obj, bool):
+        return sir.ScalarType.BOOL
+    elif isinstance(obj, int):
         return sir.ScalarType.SINT64
     elif isinstance(obj, float):
         return sir.ScalarType.FLOAT64
-    elif isinstance(obj, bool):
-        return sir.ScalarType.SINT8
     else:
         raise NotImplementedError()
 
@@ -93,6 +93,7 @@ class _JitStencil:
         stencil_ast = compiler.parse_function(self.stencil, input_types, output_types)
         options = sir.CompileOptions(sir.TargetArch.X86, sir.OptimizationLevel.O3)
         compiled_module: sir.CompiledModule = sir.compile(stencil_ast, options, True)
+        ir = compiled_module.get_ir()
         compiled_module.invoke("main", *inputs, *outputs)
 
 

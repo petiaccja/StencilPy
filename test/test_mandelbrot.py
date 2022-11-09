@@ -6,7 +6,21 @@ import matplotlib.pyplot as plt
 
 @stencil(jit=True)
 def stencil_fill(value):
-    return value
+    copy = value
+    return copy
+
+
+@stencil(jit=True)
+def stencil_select(cond, a, b):
+    used_outer = a
+    used_inner = a
+    if cond:
+        used_outer = a
+        if cond:
+            used_inner = b
+        else:
+            used_inner = a
+    return used_inner + used_outer
 
 
 @stencil(jit=True)
@@ -33,6 +47,12 @@ def test_fill():
     out = np.zeros(shape=(10, 10), dtype=float)
     stencil_fill(1.0)(out)
     assert np.allclose(out, 1.0)
+
+def test_select():
+    out = np.zeros(shape=(10, 10), dtype=float)
+    cond = True
+    stencil_select(cond, 1.0, 2.0)(out)
+    assert np.allclose(out, 3.0)
 
 
 def test_mandelbrot():
