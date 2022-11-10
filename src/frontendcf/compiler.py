@@ -1,7 +1,7 @@
 import copy
 import inspect
 import ast
-from typing import Optional
+from dataclasses import dataclass
 
 import stencilir as sir
 
@@ -41,8 +41,9 @@ def _translate_compare_op(op):
 
 
 class UsedDefinedVars(ast.NodeVisitor):
-    defined_vars: dict[ast.AST, set[str]] = {}
-    used_vars: dict[ast.AST, set[str]] = {}
+    def __init__(self):
+        self.defined_vars: dict[ast.AST, set[str]] = {}
+        self.used_vars: dict[ast.AST, set[str]] = {}
 
     def visit_FunctionDef(self, node: ast.FunctionDef):
         for arg in node.args.args:
@@ -67,12 +68,10 @@ class UsedDefinedVars(ast.NodeVisitor):
 
 
 class DefinedBeforeVars(ast.NodeVisitor):
-    defined_vars: dict[ast.AST, set[str]]
-    defined_before_vars: dict[ast.AST, set[str]] = {}
-    _cumulative: set[str] = set()
-
     def __init__(self, def_annotations: dict[ast.AST, set[str]]):
         self.defined_vars = def_annotations
+        self.defined_before_vars: dict[ast.AST, set[str]] = {}
+        self._cumulative: set[str] = set()
 
     def generic_visit(self, node: ast.AST):
         self.defined_before_vars[node] = self._cumulative
@@ -101,7 +100,13 @@ class DefinedBeforeVars(ast.NodeVisitor):
         self._cumulative = cumulative_then | cumulative_else
 
     def visit_For(self, node: ast.For):
-        raise NotImplementedError()
+        self.defined_before_vars[node] = self._cumulative
+
+        for statement in node.body:
+            self.visit(statement)
+        if node.orelse:
+            raise NotImplementedError("For loop else clause not supported.")
+        self.visit(node.target)
 
     def visit_Load(self, node: ast.Load):
         pass
@@ -111,15 +116,12 @@ class DefinedBeforeVars(ast.NodeVisitor):
 
 
 class UsedAfterVars(ast.NodeVisitor):
-    defined_vars: dict[ast.AST, set[str]]
-    used_vars: dict[ast.AST, set[str]]
-    used_after_vars: dict[ast.AST, set[str]] = {}
-    refreshed_vars: dict[ast.AST, set[str]] = {}
-    _cumulative: set[str] = set()
-
-    def __init__(self, def_annotations: dict[ast.AST, set[str]], use_annotations: dict[ast.AST, set[str]]):
-        self.defined_vars = def_annotations
-        self.used_vars = use_annotations
+    def __init__(self, defined_vars: dict[ast.AST, set[str]], used_vars: dict[ast.AST, set[str]]):
+        self.defined_vars: dict[ast.AST, set[str]] = defined_vars
+        self.used_vars: dict[ast.AST, set[str]] = used_vars
+        self.used_after_vars: dict[ast.AST, set[str]] = {}
+        self.refreshed_vars: dict[ast.AST, set[str]] = {}
+        self._cumulative: set[str] = set()
 
     def generic_visit(self, node: ast.AST):
         self.used_after_vars[node] = self._cumulative
@@ -133,6 +135,11 @@ class UsedAfterVars(ast.NodeVisitor):
     def visit_FunctionDef(self, node: ast.FunctionDef):
         for statement in reversed(node.body):
             self.visit(statement)
+
+    def visit_Assign(self, node: ast.Assign):
+        self.visit(node.value)
+        for target in node.targets:
+            self.visit(target)
 
     def visit_If(self, node: ast.If):
         self.used_after_vars[node] = self._cumulative
@@ -150,7 +157,22 @@ class UsedAfterVars(ast.NodeVisitor):
         self.refreshed_vars[node] = self.used_after_vars[node] - self._cumulative
 
     def visit_For(self, node: ast.For):
-        raise NotImplementedError()
+        self.used_after_vars[node] = self._cumulative
+
+        defs = UsedDefinedVars()
+        for statement in reversed(node.body):
+            self.visit(statement)
+            defs.visit(statement)
+        if node.orelse:
+            raise NotImplementedError("For loop else clause not supported.")
+        self.visit(node.target)
+
+        defined_vars: set[str] = set()
+        for defined_vars_by_node in defs.defined_vars.values():
+            for var in defined_vars_by_node:
+                defined_vars.add(var)
+
+        self.refreshed_vars[node] = (self.used_after_vars[node] - self._cumulative) | (defined_vars & self._cumulative)
 
     def visit_Load(self, node: ast.Load):
         pass
@@ -159,45 +181,13 @@ class UsedAfterVars(ast.NodeVisitor):
         pass
 
 
-class ScopeLeakAnnotator(ast.NodeVisitor):
-    use_after_annotations: dict[ast.AST, set[str]] = {}
-    refreshes_annotations: dict[ast.AST, set[str]] = {}
-    scope_leaks: dict[ast.AST, set[str]] = {}
-
-    def __init__(
-            self,
-            use_after_annotations: dict[ast.AST, set[str]],
-            refreshes_annotations: dict[ast.AST, set[str]]
-    ):
-        self.use_after_annotations = use_after_annotations
-        self.refreshes_annotations = refreshes_annotations
-
-    def visit_If(self, node: ast.If):
-        self.scope_leaks[node] = self.refreshes_annotations[node]
-
-        self.generic_visit(node)
-
-
+@dataclass
 class PythonToStencilAST(ast.NodeTransformer):
     file: str
     input_types: list[sir.Type]
     output_types: list[sir.FieldType]
     refreshed_vars: dict[ast.AST, set[str]]
     defined_before_vars: dict[ast.AST, set[str]]
-
-    def __init__(
-            self,
-            file: str,
-            input_types: list[sir.Type],
-            output_types: list[sir.Type],
-            refreshed_vars: dict[ast.AST, set[str]],
-            defined_before_vars: dict[ast.AST, set[str]]
-    ):
-        self.file = file
-        self.input_types = input_types
-        self.output_types = output_types
-        self.refreshed_vars = refreshed_vars
-        self.defined_before_vars = defined_before_vars
 
     def visit_Module(self, node: ast.Module) -> sir.Module:
         functions: list[sir.Function] = []
@@ -273,7 +263,28 @@ class PythonToStencilAST(ast.NodeTransformer):
         return if_stmt
 
     def visit_For(self, node: ast.For) -> sir.Assign | sir.For:
-        raise NotImplementedError()
+        loc = _get_location(self.file, node)
+        refreshed_vars = self.refreshed_vars[node]
+        if not isinstance(node.target, ast.Name):
+            raise ValueError("For loops can have only a single index variable.")
+        index_var_name = node.target.id
+
+        yield_stmt = sir.Yield([sir.SymbolRef(var, loc) for var in refreshed_vars], loc)
+        start, end, step = self._visit_range(node.iter)
+        for_stmt = sir.For(
+            start,
+            end,
+            step,
+            index_var_name,
+            [*[self.visit(stmt) for stmt in node.body], yield_stmt],
+            [sir.SymbolRef(var, loc) for var in refreshed_vars],
+            list(refreshed_vars),
+            loc
+        )
+        if refreshed_vars:
+            assign_stmt = sir.Assign(list(refreshed_vars), [for_stmt], loc)
+            return assign_stmt
+        return for_stmt
 
     def visit_Name(self, node: ast.Name) -> sir.SymbolRef:
         if not isinstance(node.ctx, ast.Load):
@@ -298,14 +309,14 @@ class PythonToStencilAST(ast.NodeTransformer):
                 operators,
         ) -> sir.Expression:
             if not operators:
-                return sir.Constant.boolean(True, loc)
+                return condition
             i = len(values)
             op = operators[0]
             right = values[0]
             return sir.If(
                 condition,
                 [
-                    sir.Assign([f"__value_{i}"], [right]),
+                    sir.Assign([f"__value_{i}"], [right], loc),
                     sir.Assign(
                         ["__condition"],
                         [sir.ComparisonOperator(left, sir.SymbolRef(f"__value_{i}", loc), op, loc)],
@@ -331,8 +342,46 @@ class PythonToStencilAST(ast.NodeTransformer):
             operators
         )
 
+    def visit_Call(self, node: ast.Call) -> sir.Expression:
+        loc = _get_location(self.file, node)
+        if isinstance(node.func, ast.Name) and node.func.id == "index":
+            return sir.Index(loc)
+        raise NotImplementedError("Function calls are not supported.")
+
+    def visit_Subscript(self, node: ast.Subscript) -> sir.Sample:
+        loc = _get_location(self.file, node)
+        field = self.visit(node.value)
+        index = self.visit(node.slice)
+        return sir.Sample(field, index, loc)
+
     def visit_Constant(self, node: ast.Constant) -> sir.Constant:
-        raise NotImplementedError()
+        loc = _get_location(self.file, node)
+        if isinstance(node.value, float):
+            return sir.Constant.floating(node.value, sir.ScalarType.FLOAT64, loc)
+        elif isinstance(node.value, bool):
+            return sir.Constant.boolean(node.value, loc)
+        elif isinstance(node.value, int):
+            return sir.Constant.integral(node.value, sir.ScalarType.SINT64, loc)
+        else:
+            raise NotImplementedError(f"Constant of type {type(node.value)} is not supported.")
+
+    def _visit_range(self, node: ast.AST):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name) or node.func.id != "range":
+            raise ValueError("range(...) call expected")
+        loc = _get_location(self.file, node)
+        args = node.args
+        c0 = sir.Constant.index(0, loc)
+        c1 = sir.Constant.index(1, loc)
+
+        def as_index(arg):
+            return sir.Cast(arg, sir.ScalarType.INDEX, loc)
+
+        if len(args) == 1:
+            return c0, as_index(self.visit(args[0])), c1
+        if len(args) == 2:
+            return as_index(self.visit(args[0])), as_index(self.visit(args[1])), c1
+        return as_index(self.visit(args[0])), as_index(self.visit(args[1])), as_index(self.visit(args[2]))
+
 
 
 def parse_function(fun: callable, input_types: list[sir.Type], output_types: list[sir.Type]):
@@ -347,17 +396,18 @@ def parse_function(fun: callable, input_types: list[sir.Type], output_types: lis
     print("\n")
     defs_before = DefinedBeforeVars(use_defs.defined_vars)
     defs_before.visit(python_ast)
-    print({k: v for k, v in defs_before.defined_before_vars.items() if not isinstance(k, (ast.Name, ast.Module))})
+    print("def before: ", {k: v for k, v in defs_before.defined_before_vars.items() if not isinstance(k, (ast.Name, ast.Module))})
 
     uses_after = UsedAfterVars(use_defs.defined_vars, use_defs.used_vars)
     uses_after.visit(python_ast)
-    print({k: v for k, v in uses_after.used_after_vars.items() if not isinstance(k, (ast.Name, ast.Module))})
+    print("used after: ", {k: v for k, v in uses_after.used_after_vars.items() if not isinstance(k, (ast.Name, ast.Module))})
+    print("refreshed:  ", {k: v for k, v in uses_after.refreshed_vars.items() if not isinstance(k, (ast.Name, ast.Module))})
 
     ast.increment_lineno(python_ast, lineno - 1)
     return PythonToStencilAST(
         source_file,
         input_types,
         output_types,
-        defs_before.defined_before_vars,
-        uses_after.refreshed_vars
+        uses_after.refreshed_vars,
+        defs_before.defined_before_vars
     ).visit(python_ast)
