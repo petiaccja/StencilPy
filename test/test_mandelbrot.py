@@ -41,13 +41,13 @@ def stencil_mandelbrot(c_field_real, c_field_imag, num_iters):
     zn_real = 0.0
     zn_imag = 0.0
     diverged_after = 0
-    for i in range(1, num_iters):
+    for i in range(0, num_iters):
         znsq_real = zn_real * zn_real - zn_imag * zn_imag
         znsq_imag = 2.0 * zn_real * zn_imag
         zn1_real = znsq_real + c_real
         zn1_imag = znsq_imag + c_imag
         mag = zn1_real * zn_real + zn1_imag * zn1_imag
-        if mag < 10000.0:
+        if mag < 4.0:
             diverged_after = diverged_after + 1
         zn_real = zn1_real
         zn_imag = zn1_imag
