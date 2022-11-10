@@ -96,8 +96,9 @@ class DefinedBeforeVars(ast.NodeVisitor):
         for statement in node.orelse:
             self.visit(statement)
         cumulative_else = copy.deepcopy(self._cumulative)
-
         self._cumulative = cumulative_then | cumulative_else
+
+        self.visit(node.test)
 
     def visit_For(self, node: ast.For):
         self.defined_before_vars[node] = self._cumulative
@@ -152,9 +153,10 @@ class UsedAfterVars(ast.NodeVisitor):
         for statement in reversed(node.orelse):
             self.visit(statement)
         cumulative_else = copy.deepcopy(self._cumulative)
-
         self._cumulative = cumulative_then & cumulative_else
+
         self.refreshed_vars[node] = self.used_after_vars[node] - self._cumulative
+        self.visit(node.test)
 
     def visit_For(self, node: ast.For):
         self.used_after_vars[node] = self._cumulative
