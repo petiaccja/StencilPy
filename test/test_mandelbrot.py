@@ -84,8 +84,5 @@ def test_mandelbrot():
     field_imag = np.reshape(axis_imag, newshape=(1, height + 1)) * np.ones(shape=(width + 1, 1))
     out = np.zeros(shape=(width + 1, height + 1), dtype=int)
     stencil_mandelbrot(field_real, field_imag, 128)(out)
-    plt.imshow(np.transpose(out))
-    plt.show()
-
-
-#test_mandelbrot()
+    #plt.imshow(np.transpose(out))
+    #plt.show()

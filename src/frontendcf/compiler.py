@@ -385,7 +385,6 @@ class PythonToStencilAST(ast.NodeTransformer):
         return as_index(self.visit(args[0])), as_index(self.visit(args[1])), as_index(self.visit(args[2]))
 
 
-
 def parse_function(fun: callable, input_types: list[sir.Type], output_types: list[sir.Type]):
     source = inspect.getsource(fun)
     source_file = inspect.getsourcefile(fun)
@@ -395,15 +394,10 @@ def parse_function(fun: callable, input_types: list[sir.Type], output_types: lis
     use_defs = UsedDefinedVars()
     use_defs.visit(python_ast)
 
-    print("\n")
     defs_before = DefinedBeforeVars(use_defs.defined_vars)
     defs_before.visit(python_ast)
-    print("def before: ", {k: v for k, v in defs_before.defined_before_vars.items() if not isinstance(k, (ast.Name, ast.Module))})
-
     uses_after = UsedAfterVars(use_defs.defined_vars, use_defs.used_vars)
     uses_after.visit(python_ast)
-    print("used after: ", {k: v for k, v in uses_after.used_after_vars.items() if not isinstance(k, (ast.Name, ast.Module))})
-    print("refreshed:  ", {k: v for k, v in uses_after.refreshed_vars.items() if not isinstance(k, (ast.Name, ast.Module))})
 
     ast.increment_lineno(python_ast, lineno - 1)
     return PythonToStencilAST(
