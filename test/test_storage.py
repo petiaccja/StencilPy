@@ -1,4 +1,5 @@
-from stencilpy.field import Field, Dimension
+from stencilpy.storage import Field
+from stencilpy.concepts import Dimension
 import numpy as np
 
 IDim = Dimension()
@@ -16,7 +17,7 @@ def test_field_moveaxis():
     b = Field([JDim, IDim], np.transpose(data))
 
     assert np.allclose(a.data, b.data)
-    assert np.allclose(a.sorted_dimensions, b.sorted_dimensions)
+    assert a.sorted_dimensions == b.sorted_dimensions
 
 
 def test_field_elementwise():

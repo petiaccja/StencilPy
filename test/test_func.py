@@ -1,31 +1,34 @@
 import numpy as np
+import pytest
 
-from stencilpy.field import Field, Dimension, index
+from stencilpy.storage import *
+from stencilpy.concepts import Dimension
+from stencilpy.lib import *
 from stencilpy.func import func, stencil
+from .config import use_jit
 
 
 TDim = Dimension()
 
 
-def test_func():
+def test_func_passthrough_scalar(use_jit):
     @func
-    def add(a: Field, b: Field) -> Field:
-        return a + b
+    def fn(a: int) -> int:
+        return a
 
-    a = Field([TDim], np.array([1, 2, 3]))
-    b = Field([TDim], np.array([4, 3, 6]))
-    r = add(a, b)
-
-    assert np.allclose(r.data, a.data + b.data)
+    assert fn(3, jit=use_jit) == 3
 
 
-def test_stencil():
+def test_stencil_passthrough_scalar(use_jit):
+    if use_jit:
+        pytest.skip("calling stencils directly via jit is not yet implemented")
+
     @stencil
-    def add_stencil(a: Field, b: Field) -> float:
-        return a[index()] + b[index()]
+    def sn(a: int) -> int:
+        return a
 
-    a = Field([TDim], np.array([1, 2, 3]))
-    b = Field([TDim], np.array([4, 3, 6]))
-    r = add_stencil[TDim][3](a, b)
+    r = sn[TDim][3](3, jit=use_jit)
 
-    assert np.allclose(r.data, a.data + b.data)
+    assert isinstance(r, Field)
+    assert shape(r, TDim) == 3
+    assert np.allclose(r.data, 3)

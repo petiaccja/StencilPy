@@ -1,52 +1,24 @@
 import dataclasses
-from typing import Optional, Sequence
+from typing import Sequence
 
 import numpy as np
 
-from stencilpy import utility
-
-
-@dataclasses.dataclass(unsafe_hash=True)
-class Dimension:
-    id: int
-    name: Optional[str] = dataclasses.field(default=None, hash=False)
-
-    def __init__(self, name: Optional[str] = None):
-        self.id = next(utility.unique_id)
-        self.name = name
-
-
-@dataclasses.dataclass
-class Index:
-    values: dict[Dimension, int]
-
-
-_index: Optional[Index] = None
-
-
-def set_index(idx: Index):
-    global _index
-    _index = idx
-
-
-def index():
-    global _index
-    return _index
+from stencilpy import concepts
 
 
 @dataclasses.dataclass
 class Connectivity:
-    source_dimension: Dimension
-    neighbor_dimension: Dimension
-    element_dimension: Dimension
+    source_dimension: concepts.Dimension
+    neighbor_dimension: concepts.Dimension
+    element_dimension: concepts.Dimension
     indices: np.ndarray
 
 
 class Field:
-    sorted_dimensions: list[Dimension]
+    sorted_dimensions: list[concepts.Dimension]
     data: np.ndarray
 
-    def __init__(self, dimensions: Sequence[Dimension], data: np.ndarray):
+    def __init__(self, dimensions: Sequence[concepts.Dimension], data: np.ndarray):
         assert len(dimensions) == data.ndim
         indexed_dimensions = [(dim, index) for index, dim in enumerate(dimensions)]
         sorted_dimensions = sorted(indexed_dimensions, key=lambda d: d[0].id)
@@ -73,15 +45,15 @@ class Field:
         new_data = self.data / other.data
         return Field(self.sorted_dimensions, new_data)
 
-    def __getitem__(self, dimensions: Index | tuple[Dimension, ...]):
-        if isinstance(dimensions, Index):
+    def __getitem__(self, dimensions: concepts.Index | tuple[concepts.Dimension, ...]):
+        if isinstance(dimensions, concepts.Index):
             raw_idx = tuple(dimensions.values[dim] for dim in self.sorted_dimensions)
             return self.data[raw_idx]
 
         @dataclasses.dataclass
         class Slicer:
             field: Field
-            dimensions: tuple[Dimension]
+            dimensions: tuple[concepts.Dimension]
             def __getitem__(self, slices: tuple[int, ...] | tuple[slice, ...]):
                 mapping = {dim: slc for dim, slc in zip(dimensions, slices)}
                 slices = tuple(mapping[dim] for dim in self.field.sorted_dimensions)

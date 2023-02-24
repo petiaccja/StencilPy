@@ -1,17 +1,7 @@
 import dataclasses
 from stencilpy.compiler import types as ts
 from typing import Any
-
-
-@dataclasses.dataclass
-class Location:
-    file: str
-    line: int
-    column: int
-
-    @staticmethod
-    def unknown():
-        return Location("unknown", 0, 0)
+from stencilpy.concepts import Location, Dimension
 
 
 @dataclasses.dataclass
@@ -60,6 +50,23 @@ class Return(Statement):
 
 @dataclasses.dataclass
 class Constant(Expr):
+    value: Any
+
+
+@dataclasses.dataclass
+class SymbolRef(Expr):
+    name: str
+
+
+@dataclasses.dataclass
+class Shape(Expr):
+    field: Expr
+    dim: Dimension
+
+
+@dataclasses.dataclass
+class ExternalSymbol(Node):
+    name: str
     value: Any
 
 
