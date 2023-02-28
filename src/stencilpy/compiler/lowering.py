@@ -6,7 +6,6 @@ from .node_transformer import NodeTransformer
 from stencilpy.compiler import types as ts
 from stencilpy.error import *
 from stencilpy import concepts
-from .symbol_table import SymbolTable
 from collections.abc import Mapping
 
 
@@ -35,8 +34,6 @@ def get_dim_index(type_: ts.FieldType, dim: concepts.Dimension):
 
 
 class ShapeFunctionPass(NodeTransformer):
-    symtable: SymbolTable
-
     @staticmethod
     def shape_var(name: str, dim: concepts.Dimension):
         return f"__shape_{dim.id}_{name}"
@@ -46,8 +43,6 @@ class ShapeFunctionPass(NodeTransformer):
         return f"__shapes_{name}"
 
     def visit_Module(self, node: hast.Module) -> hast.Module:
-        self.symtable = SymbolTable()
-
         shape_funcs = [self.visit(func) for func in node.functions]
 
         funcs = [*shape_funcs, *node.functions]  # Shape function are added to original functions
@@ -55,31 +50,28 @@ class ShapeFunctionPass(NodeTransformer):
         return hast.Module(node.location, node.type_, funcs, stencils)
 
     def visit_Function(self, node: hast.Function) -> hast.Function:
-        def sc():
-            param_dims = []
-            for param in node.parameters:
-                ref = hast.SymbolRef(node.location, param.type_, param.name)
-                if isinstance(param.type_, ts.FieldType):
-                    for dim in param.type_.dimensions:
-                        var = self.shape_var(param.name, dim)
-                        size = hast.Shape(node.location, ts.IndexType(), ref, dim)
-                        assign = hast.Assign(node.location, ts.VoidType(), [var], [size])
-                        param_dims.append(assign)
+        param_dims = []
+        for param in node.parameters:
+            ref = hast.SymbolRef(node.location, param.type_, param.name)
+            if isinstance(param.type_, ts.FieldType):
+                for dim in param.type_.dimensions:
+                    var = self.shape_var(param.name, dim)
+                    size = hast.Shape(node.location, ts.IndexType(), ref, dim)
+                    assign = hast.Assign(node.location, ts.VoidType(), [var], [size])
+                    param_dims.append(assign)
 
-            statements = [self.visit(statement) for statement in node.body]
-            body = [*param_dims, *statements]
+        statements = [self.visit(statement) for statement in node.body]
+        body = [*param_dims, *statements]
 
-            results: list[ts.Type] = []
-            for statement in body:
-                if isinstance(statement, hast.Return):
-                    results = [expr.type_ for expr in statement.values]
+        results: list[ts.Type] = []
+        for statement in body:
+            if isinstance(statement, hast.Return):
+                results = [expr.type_ for expr in statement.values]
 
-            type_ = ts.FunctionType([p.type_ for p in node.parameters], results)
-            name = self.shape_func(node.name)
+        type_ = ts.FunctionType([p.type_ for p in node.parameters], results)
+        name = self.shape_func(node.name)
 
-            return hast.Function(node.location, type_, name, node.parameters, results, body)
-
-        return self.symtable.scope(sc)
+        return hast.Function(node.location, type_, name, node.parameters, results, body)
 
     def visit_Return(self, node: hast.Return) -> hast.Return:
         values = [self.visit(value) for value in node.values]
