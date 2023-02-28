@@ -21,7 +21,7 @@ class CompilationError(Exception):
 
 class InternalCompilerError(CompilationError):
     def __init__(self, location: concepts.Location, message: str):
-        super().__init__(location, f"bug in the compiler: {message}")
+        super().__init__(location, f"internal compiler error: {message}")
 
 
 class UndefinedSymbolError(CompilationError):
