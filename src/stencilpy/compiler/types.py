@@ -61,7 +61,19 @@ class FunctionType(Type):
     def __str__(self):
         params = ', '.join(str(p) for p in self.parameters)
         results = ', '.join(str(r) for r in self.results)
-        return f"({params}) -> {results}"
+        return f"({params}) -> {results}"@dataclasses.dataclass
+
+
+@dataclasses.dataclass
+class StencilType(Type):
+    parameters: list[Type]
+    results: list[Type]
+    dims: list[concepts.Dimension]
+
+    def __str__(self):
+        params = ', '.join(str(p) for p in self.parameters)
+        results = ', '.join(str(r) for r in self.results)
+        return f"({params})<{self.ndim}> -> {results}"
 
 
 def infer_object_type(arg: Any) -> Type:

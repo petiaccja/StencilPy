@@ -27,6 +27,11 @@ class Statement(Node):
 
 
 @dataclasses.dataclass
+class SymbolRef(Expr):
+    name: str
+
+
+@dataclasses.dataclass
 class Function(Node):
     name: str
     parameters: list[Parameter]
@@ -40,7 +45,7 @@ class Stencil(Node):
     parameters: list[Parameter]
     results: list[ts.Type]
     body: list[Statement]
-    ndim: int
+    dims: list[Dimension]
 
 
 @dataclasses.dataclass
@@ -49,13 +54,15 @@ class Return(Statement):
 
 
 @dataclasses.dataclass
-class Constant(Expr):
-    value: Any
+class Apply(Expr):
+    stencil: SymbolRef
+    shape: dict[Dimension, Expr]
+    args: list[Expr]
 
 
 @dataclasses.dataclass
-class SymbolRef(Expr):
-    name: str
+class Constant(Expr):
+    value: Any
 
 
 @dataclasses.dataclass
@@ -71,7 +78,7 @@ class Shape(Expr):
 
 
 @dataclasses.dataclass
-class ExternalSymbol(Node):
+class ClosureVariable(Node):
     name: str
     value: Any
 

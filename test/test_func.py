@@ -30,6 +30,20 @@ def test_func_passthrough_field(use_jit):
     assert np.allclose(r.data, a.data)
 
 
+def test_func_apply(use_jit):
+    @stencil
+    def sn(v: int) -> int:
+        return v
+
+    @func
+    def fn(v: int, w: int, h: int):
+        return sn[TDim, UDim][w, h](v)
+
+    r = fn(1, 4, 3, jit=use_jit)
+
+    assert np.all(r.data == 1)
+
+
 def test_stencil_passthrough_scalar(use_jit):
     if use_jit:
         pytest.skip("calling stencils directly via jit is not yet implemented")

@@ -93,7 +93,7 @@ class ShapeFunctionPass(NodeTransformer):
             return sizes
         return node
 
-    def visit_Assign(self, node: hlast.Assign) -> sir.SymbolRef:
+    def visit_Assign(self, node: hlast.Assign) -> hlast.Assign:
         raw_values = [self.visit(value) for value in node.values]
         names = []
         values = []
@@ -106,11 +106,15 @@ class ShapeFunctionPass(NodeTransformer):
                 names.append(raw_name)
                 values.append(raw_value)
 
-        return sir.Assign(node.location, node.type_, names, values)
+        return hlast.Assign(node.location, node.type_, names, values)
 
     def visit_Shape(self, node: hlast.Shape) -> hlast.Expr:
-        sizes = self.visit(node.field)
-        return sizes[node.dim]
+        shape = self.visit(node.field)
+        return shape[node.dim]
+
+    def visit_Apply(self, node: hlast.Apply) -> dict[concepts.Dimension, hlast.Expr]:
+        shape = {dim: self.visit(size) for dim, size in node.shape.items()}
+        return shape
 
 
 class HlastToSirPass(NodeTransformer):
@@ -137,9 +141,22 @@ class HlastToSirPass(NodeTransformer):
         statements = [self.visit(statement) for statement in node.body]
         return sir.Function(name, [*parameters, *out_parameters], results, statements, True, loc)
 
+    def visit_Stencil(self, node: hlast.Stencil) -> sir.Stencil:
+        loc = as_sir_loc(node.location)
+        name = node.name
+        parameters = [sir.Parameter(p.name, as_sir_type(p.type_)) for p in node.parameters]
+        out_parameters = [
+            sir.Parameter(self._out_param_name(idx), as_sir_type(type_))
+            for idx, type_ in enumerate(node.results)
+            if isinstance(type_, ts.FieldType)
+        ]
+        results = [as_sir_type(type_) for type_ in node.results]
+        statements = [self.visit(statement) for statement in node.body]
+        ndims = len(node.dims)
+        return sir.Stencil(name, [*parameters, *out_parameters], results, statements, ndims, True, loc)
+
     def visit_Return(self, node: hlast.Return) -> sir.Return:
         loc = as_sir_loc(node.location)
-        #values = [self.visit(value) for value in node.values]
         values = []
         for idx, value in enumerate(node.values):
             if isinstance(value.type_, ts.FieldType):
@@ -196,6 +213,19 @@ class HlastToSirPass(NodeTransformer):
         field = self.visit(node.field)
         idx = sir.Constant.index(idx_val, loc)
         return sir.Dim(field, idx, loc)
+
+    def visit_Apply(self, node: hlast.Apply) -> sir.Apply:
+        loc = as_sir_loc(node.location)
+        callee = node.stencil.name
+        inputs = [self.visit(arg) for arg in node.args]
+        shape = [(dim, self.visit(size)) for dim, size in node.shape.items()]
+        shape = sorted(shape, key=lambda v: v[0])
+        shape = [size[1] for size in shape]
+        shape = [sir.Cast(size, sir.IndexType(), loc) for size in shape]
+        assert isinstance(node.type_, ts.FieldType)
+        dtype = as_sir_type(node.type_.element_type)
+        outputs = [sir.AllocTensor(dtype, shape, loc)]
+        return sir.Apply(callee, inputs, outputs, [], [0]*len(shape), loc)
 
 
 def lower(hast_module: hlast.Module) -> sir.Module:

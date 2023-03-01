@@ -57,16 +57,16 @@ def _allocate_results(
     shapes = module.invoke(shape_func_name, *translated_args)
     if not isinstance(shapes, tuple):
         shapes = (shapes,)
-    arrays = []
+    fields = []
     start = 0
     for result in func_signature.results:
         if isinstance(result, ts.FieldType):
             end = start + len(result.dimensions)
             shape = shapes[start:end]
             dtype = ts.as_numpy_type(result.element_type)
-            arrays.append(np.empty(shape, dtype))
+            fields.append(storage.Field(result.dimensions, np.empty(shape, dtype)))
             start = end
-    return tuple(arrays)
+    return tuple(fields)
 
 
 def _match_results_to_outs(results: Any, out_args: tuple) -> Any:
@@ -86,7 +86,7 @@ def _match_results_to_outs(results: Any, out_args: tuple) -> Any:
 
 
 @dataclasses.dataclass
-class Func:
+class JitFunction:
     definition: callable
 
     def __call__(self, *args, **kwargs):
@@ -97,8 +97,8 @@ class Func:
         return self.definition(*args, **kwargs) if not use_jit else self.call_jit(*args, **kwargs)
 
     def call_jit(self, *args, **kwargs):
-        func_name = self.definition.__name__
         arg_types = [ts.infer_object_type(arg) for arg in args]
+        func_name = parser.mangle_name(self.definition.__name__, arg_types)
         kwarg_types = {name: ts.infer_object_type(value) for name, value in kwargs.items()}
         hast_module = self.parse(arg_types, kwarg_types)
         signature = _get_signature(hast_module, func_name)
@@ -108,7 +108,8 @@ class Func:
         ir = compiled_module.get_ir()
         translated_args = [_translate_arg(arg) for arg in args]
         out_args = _allocate_results(func_name, signature, compiled_module, translated_args)
-        results = compiled_module.invoke(func_name, *translated_args, *out_args)
+        translated_out_args = [_translate_arg(arg) for arg in out_args]
+        results = compiled_module.invoke(func_name, *translated_args, *translated_out_args)
         return _match_results_to_outs(results, out_args)
 
     def parse(self, arg_types: list[sir.Type], kwarg_types: dict[str, sir.Type]) -> hlast.Module:
@@ -116,13 +117,13 @@ class Func:
 
 
 @dataclasses.dataclass
-class Stencil:
+class JitStencil:
     definition: callable
 
     def __getitem__(self, dimensions: concepts.Dimension | tuple[concepts.Dimension, ...]):
         if not isinstance(dimensions, tuple):
             dimensions = dimensions,
-        return Stencil.Slicer(self.definition, dimensions)
+        return JitStencil.Slicer(self.definition, dimensions)
 
     @dataclasses.dataclass
     class Slicer:
@@ -132,7 +133,7 @@ class Stencil:
         def __getitem__(self, sizes: int | tuple[int, ...]):
             if not isinstance(sizes, tuple):
                 sizes = sizes,
-            return Stencil.Executor(self.definition, self.dimensions, sizes)
+            return JitStencil.Executor(self.definition, self.dimensions, sizes)
 
     @dataclasses.dataclass
     class Executor:
@@ -167,8 +168,8 @@ class Stencil:
 
 
 def func(definition: callable):
-    return Func(definition)
+    return JitFunction(definition)
 
 
 def stencil(definition: callable):
-    return Stencil(definition)
+    return JitStencil(definition)
