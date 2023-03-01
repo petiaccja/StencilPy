@@ -39,3 +39,14 @@ def test_apply(use_jit):
     r = fn(1, 4, 3, jit=use_jit)
 
     assert np.all(r.data == 1)
+
+
+def test_assign(use_jit):
+    @func
+    def fn(a: Field) -> Field:
+        tmp = a
+        return tmp
+    
+    a = Field([TDim, UDim], np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float32))
+    r = fn(a, jit=use_jit)
+    assert np.allclose(r.data, a.data)

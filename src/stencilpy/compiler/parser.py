@@ -148,6 +148,26 @@ class PythonToHlast(ast.NodeTransformer):
         if apply: return apply
         raise CompilationError(loc, "object not callable")
 
+    def visit_Assign(self, node: ast.Assign) -> hlast.Assign:
+        loc = self.get_ast_loc(node)
+        values = [self.visit(node.value)]
+        if not all(isinstance(target, ast.Name) for target in node.targets):
+            raise CompilationError(loc, "only assigning to simple variables is supported")
+        names = [target.id for target in node.targets]
+        for name, value in zip(names, values):
+            self.symtable.assign(name, value.type_)
+        return hlast.Assign(loc, ts.VoidType(), names, values)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> hlast.Assign:
+        loc = self.get_ast_loc(node)
+        values = [self.visit(node.value)]
+        if not isinstance(node.target, ast.Name):
+            raise CompilationError(loc, "only assigning to simple variables is supported")
+        names = [node.target.id]
+        for name, value in zip(names, values):
+            self.symtable.assign(name, value.type_)
+        return hlast.Assign(loc, ts.VoidType(), names, values)
+
     def _visit_call_builtin(self, node: ast.Call) -> Optional[hlast.Expr]:
         loc = self.get_ast_loc(node)
         if not isinstance(node.func, ast.Name):
