@@ -29,6 +29,9 @@ class Dimension:
         self.id = next(utility.unique_id)
         self.name = name
 
+    def __lt__(self, other):
+        return self.id < other.id
+
 
 @dataclasses.dataclass
 class Index:

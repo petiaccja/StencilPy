@@ -38,6 +38,53 @@ def _translate_arg(arg: Any) -> Any:
 def _set_index(idx: concepts.Index):
     lib._index = idx
 
+
+def _get_signature(hast_module: hast.Module, func_name: str) -> ts.FunctionType:
+    for func in hast_module.functions:
+        if func.name == func_name:
+            assert isinstance(func.type_, ts.FunctionType)
+            return func.type_
+    raise KeyError(f"function {func_name} not found in module")
+
+
+def _allocate_results(
+        func_name: str,
+        func_signature: ts.FunctionType,
+        module: sir.CompiledModule,
+        translated_args: list[Any]
+):
+    shape_func_name = lowering.ShapeFunctionPass.shape_func(func_name)
+    shapes = module.invoke(shape_func_name, *translated_args)
+    if not isinstance(shapes, tuple):
+        shapes = (shapes,)
+    arrays = []
+    start = 0
+    for result in func_signature.results:
+        if isinstance(result, ts.FieldType):
+            end = start + len(result.dimensions)
+            shape = shapes[start:end]
+            dtype = ts.as_numpy_type(result.element_type)
+            arrays.append(np.empty(shape, dtype))
+            start = end
+    return tuple(arrays)
+
+
+def _match_results_to_outs(results: Any, out_args: tuple) -> Any:
+    if not results:
+        return None
+    if not isinstance(results, tuple):
+        results = (results,)
+    matched = []
+    out_idx = 0
+    for result in results:
+        if isinstance(result, memoryview):
+            matched.append(out_args[out_idx])
+            out_idx += 1
+        else:
+            matched.append(result)
+    return matched[0] if len(matched) == 1 else tuple(matched)
+
+
 @dataclasses.dataclass
 class Func:
     definition: callable
@@ -50,15 +97,19 @@ class Func:
         return self.definition(*args, **kwargs) if not use_jit else self.call_jit(*args, **kwargs)
 
     def call_jit(self, *args, **kwargs):
+        func_name = self.definition.__name__
         arg_types = [ts.infer_object_type(arg) for arg in args]
         kwarg_types = {name: ts.infer_object_type(value) for name, value in kwargs.items()}
         hast_module = self.parse(arg_types, kwarg_types)
+        signature = _get_signature(hast_module, func_name)
         sir_module = lowering.lower(hast_module)
         options = sir.CompileOptions(sir.TargetArch.X86, sir.OptimizationLevel.O3)
         compiled_module: sir.CompiledModule = sir.compile(sir_module, options, True)
         ir = compiled_module.get_ir()
         translated_args = [_translate_arg(arg) for arg in args]
-        return compiled_module.invoke(self.definition.__name__, *translated_args)
+        out_args = _allocate_results(func_name, signature, compiled_module, translated_args)
+        results = compiled_module.invoke(func_name, *translated_args, *out_args)
+        return _match_results_to_outs(results, out_args)
 
     def parse(self, arg_types: list[sir.Type], kwarg_types: dict[str, sir.Type]) -> hast.Module:
         return parser.parse_as_function(self.definition, arg_types, kwarg_types)

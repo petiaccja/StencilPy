@@ -59,6 +59,12 @@ class SymbolRef(Expr):
 
 
 @dataclasses.dataclass
+class Assign(Statement):
+    names: list[str]
+    values: list[Expr]
+
+
+@dataclasses.dataclass
 class Shape(Expr):
     field: Expr
     dim: Dimension

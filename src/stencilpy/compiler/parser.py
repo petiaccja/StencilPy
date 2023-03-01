@@ -3,34 +3,14 @@ import textwrap
 from stencilpy.compiler import types as ts
 from stencilpy.error import *
 from stencilpy import concepts
+from .symbol_table import SymbolTable
 
 import inspect
 import ast
 from stencilpy.compiler import hast
 
-from typing import Any, Optional, cast, Sequence, Mapping
-
-
-class SymbolTable:
-    tables: list[dict[str, Any]]
-
-    def __init__(self):
-        self.tables = [{}]
-
-    def assign(self, name: str, value: Any):
-        self.tables[-1][name] = value
-
-    def lookup(self, name: str) -> Any:
-        for table in reversed(self.tables):
-            if name in table:
-                return table[name]
-        return None
-
-    def scope(self, callback: callable) -> Any:
-        self.tables.append({})
-        result = callback()
-        self.tables.pop(-1)
-        return result
+from typing import Any, Optional, cast
+from collections.abc import Sequence, Mapping
 
 
 def builtin_shape(transformer: Any, location: concepts.Location, args: Sequence[ast.AST]):
