@@ -1,7 +1,30 @@
 import dataclasses
 from stencilpy.compiler import types as ts
-from typing import Any
+from typing import Any, Callable
 from stencilpy.concepts import Location, Dimension
+import enum
+
+
+class ArithmeticFunction(enum.Enum):
+    ADD = enum.auto()
+    SUB = enum.auto()
+    MUL = enum.auto()
+    DIV = enum.auto()
+    MOD = enum.auto()
+    BIT_AND = enum.auto()
+    BIT_OR = enum.auto()
+    BIT_XOR = enum.auto()
+    BIT_SHL = enum.auto()
+    BIT_SHR = enum.auto()
+
+
+class ComparisonFunction(enum.Enum):
+    EQ = enum.auto()
+    NEQ = enum.auto()
+    LT = enum.auto()
+    GT = enum.auto()
+    LTE = enum.auto()
+    GTE = enum.auto()
 
 
 @dataclasses.dataclass
@@ -69,6 +92,26 @@ class Constant(Expr):
 class Assign(Statement):
     names: list[str]
     values: list[Expr]
+
+
+@dataclasses.dataclass
+class ArithmeticOperation(Expr):
+    lhs: Expr
+    rhs: Expr
+    func: ArithmeticFunction
+
+
+@dataclasses.dataclass
+class ComparisonOperation(Expr):
+    lhs: Expr
+    rhs: Expr
+    func: ComparisonFunction
+
+
+@dataclasses.dataclass
+class ElementwiseOperation(Expr):
+    args: list[Expr]
+    element_expr: Callable[[list[Expr]], Expr]
 
 
 @dataclasses.dataclass

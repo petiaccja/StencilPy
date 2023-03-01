@@ -9,7 +9,7 @@ import inspect
 import ast
 from stencilpy.compiler import hlast
 
-from typing import Any, Optional, cast
+from typing import Any, Optional, cast, Callable
 from collections.abc import Sequence, Mapping
 
 
@@ -261,7 +261,7 @@ class PythonToHlast(ast.NodeTransformer):
             raise CompilationError(location, f"external symbol of type `{type(node.value)}` is not understood")
 
 
-def get_source_code(definition: callable):
+def get_source_code(definition: Callable):
     file = inspect.getsourcefile(definition)
     source_lines, start_line = inspect.getsourcelines(definition)
     start_col = min((len(line) - len(line.lstrip()) for line in source_lines))
@@ -279,7 +279,7 @@ def add_closure_vars_to_symtable(symtable: SymbolTable, closure_vars: Mapping[st
         symtable.assign(name, hlast.ClosureVariable(loc, type_, name, value))
 
 
-def parse_as_function(definition: callable, param_types: list[ts.Type], kwparam_types: dict[str, ts.Type]) -> hlast.Module:
+def parse_as_function(definition: Callable, param_types: list[ts.Type], kwparam_types: dict[str, ts.Type]) -> hlast.Module:
     source_code, file, start_line, start_col = get_source_code(definition)
     python_ast = ast.parse(source_code)
 
@@ -303,7 +303,7 @@ def parse_as_function(definition: callable, param_types: list[ts.Type], kwparam_
     return module
 
 
-def parse_as_stencil(definition: callable, param_types: list[ts.Type], kwparam_types: dict[str, ts.Type]) -> hlast.Module:
+def parse_as_stencil(definition: Callable, param_types: list[ts.Type], kwparam_types: dict[str, ts.Type]) -> hlast.Module:
     source_code, file, start_line, start_col = get_source_code(definition)
     python_ast = ast.parse(source_code)
 

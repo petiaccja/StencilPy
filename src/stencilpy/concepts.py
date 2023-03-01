@@ -1,6 +1,6 @@
 import dataclasses
 import typing
-from typing import Optional
+from typing import Optional, Callable
 from stencilpy import utility
 import abc
 
@@ -42,7 +42,7 @@ class Index:
 
 @dataclasses.dataclass
 class Builtin:
-    definition: callable
+    definition: Callable
 
     @property
     def name(self):
@@ -56,7 +56,7 @@ class Builtin:
 class Function(typing.Protocol):
     @property
     @abc.abstractmethod
-    def definition(self) -> callable:
+    def definition(self) -> Callable:
         ...
 
     def __call__(self, *args, **kwargs):
@@ -67,12 +67,12 @@ class Function(typing.Protocol):
 class Stencil(typing.Protocol):
     @property
     @abc.abstractmethod
-    def definition(self) -> callable:
+    def definition(self) -> Callable:
         ...
 
     def __getitem__(self, dimensions: Dimension | tuple[Dimension, ...]):
         ...
 
 
-def builtin(definition: callable):
+def builtin(definition: Callable):
     return Builtin(definition)

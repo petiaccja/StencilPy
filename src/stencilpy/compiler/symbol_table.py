@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Callable
 
 
 class SymbolTable:
@@ -16,7 +16,7 @@ class SymbolTable:
                 return table[name]
         return None
 
-    def scope(self, callback: callable) -> Any:
+    def scope(self, callback: Callable) -> Any:
         self.tables.append({})
         result = callback()
         self.tables.pop(-1)

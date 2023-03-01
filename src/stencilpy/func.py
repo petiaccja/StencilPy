@@ -1,5 +1,5 @@
 import dataclasses
-from typing import Sequence, Optional, Any
+from typing import Sequence, Optional, Any, Callable
 
 import numpy as np
 
@@ -87,7 +87,7 @@ def _match_results_to_outs(results: Any, out_args: tuple) -> Any:
 
 @dataclasses.dataclass
 class JitFunction:
-    definition: callable
+    definition: Callable
 
     def __call__(self, *args, **kwargs):
         use_jit = False
@@ -118,7 +118,7 @@ class JitFunction:
 
 @dataclasses.dataclass
 class JitStencil:
-    definition: callable
+    definition: Callable
 
     def __getitem__(self, dimensions: concepts.Dimension | tuple[concepts.Dimension, ...]):
         if not isinstance(dimensions, tuple):
@@ -127,7 +127,7 @@ class JitStencil:
 
     @dataclasses.dataclass
     class Slicer:
-        definition: callable
+        definition: Callable
         dimensions: tuple[concepts.Dimension, ...]
 
         def __getitem__(self, sizes: int | tuple[int, ...]):
@@ -137,7 +137,7 @@ class JitStencil:
 
     @dataclasses.dataclass
     class Executor:
-        definition: callable
+        definition: Callable
         dimensions: tuple[concepts.Dimension, ...]
         sizes: tuple[int, ...]
 
@@ -167,9 +167,9 @@ class JitStencil:
             return outs if len(outs) > 1 else outs[0]
 
 
-def func(definition: callable):
+def func(definition: Callable):
     return JitFunction(definition)
 
 
-def stencil(definition: callable):
+def stencil(definition: Callable):
     return JitStencil(definition)
