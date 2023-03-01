@@ -6,7 +6,7 @@ import numpy as np
 from stencilpy import storage
 from stencilpy import concepts
 from stencilpy import lib
-from stencilpy.compiler import hast
+from stencilpy.compiler import hlast
 from stencilpy.compiler import parser
 
 import stencilir as sir
@@ -39,7 +39,7 @@ def _set_index(idx: concepts.Index):
     lib._index = idx
 
 
-def _get_signature(hast_module: hast.Module, func_name: str) -> ts.FunctionType:
+def _get_signature(hast_module: hlast.Module, func_name: str) -> ts.FunctionType:
     for func in hast_module.functions:
         if func.name == func_name:
             assert isinstance(func.type_, ts.FunctionType)
@@ -111,7 +111,7 @@ class Func:
         results = compiled_module.invoke(func_name, *translated_args, *out_args)
         return _match_results_to_outs(results, out_args)
 
-    def parse(self, arg_types: list[sir.Type], kwarg_types: dict[str, sir.Type]) -> hast.Module:
+    def parse(self, arg_types: list[sir.Type], kwarg_types: dict[str, sir.Type]) -> hlast.Module:
         return parser.parse_as_function(self.definition, arg_types, kwarg_types)
 
 

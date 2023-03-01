@@ -1,7 +1,7 @@
 import itertools
 
 import stencilir as sir
-from stencilpy.compiler import hast
+from stencilpy.compiler import hlast
 from .node_transformer import NodeTransformer
 from stencilpy.compiler import types as ts
 from stencilpy.error import *
@@ -9,7 +9,7 @@ from stencilpy import concepts
 from collections.abc import Mapping
 
 
-def as_sir_loc(loc: hast.Location) -> sir.Location:
+def as_sir_loc(loc: hlast.Location) -> sir.Location:
     return sir.Location(loc.file, loc.line, loc.column)
 
 
@@ -42,22 +42,22 @@ class ShapeFunctionPass(NodeTransformer):
     def shape_func(name: str):
         return f"__shapes_{name}"
 
-    def visit_Module(self, node: hast.Module) -> hast.Module:
+    def visit_Module(self, node: hlast.Module) -> hlast.Module:
         shape_funcs = [self.visit(func) for func in node.functions]
 
         funcs = [*shape_funcs, *node.functions]  # Shape function are added to original functions
         stencils = node.stencils  # Stencils are unchanged
-        return hast.Module(node.location, node.type_, funcs, stencils)
+        return hlast.Module(node.location, node.type_, funcs, stencils)
 
-    def visit_Function(self, node: hast.Function) -> hast.Function:
+    def visit_Function(self, node: hlast.Function) -> hlast.Function:
         param_dims = []
         for param in node.parameters:
-            ref = hast.SymbolRef(node.location, param.type_, param.name)
+            ref = hlast.SymbolRef(node.location, param.type_, param.name)
             if isinstance(param.type_, ts.FieldType):
                 for dim in param.type_.dimensions:
                     var = self.shape_var(param.name, dim)
-                    size = hast.Shape(node.location, ts.IndexType(), ref, dim)
-                    assign = hast.Assign(node.location, ts.VoidType(), [var], [size])
+                    size = hlast.Shape(node.location, ts.IndexType(), ref, dim)
+                    assign = hlast.Assign(node.location, ts.VoidType(), [var], [size])
                     param_dims.append(assign)
 
         statements = [self.visit(statement) for statement in node.body]
@@ -65,35 +65,35 @@ class ShapeFunctionPass(NodeTransformer):
 
         results: list[ts.Type] = []
         for statement in body:
-            if isinstance(statement, hast.Return):
+            if isinstance(statement, hlast.Return):
                 results = [expr.type_ for expr in statement.values]
 
         type_ = ts.FunctionType([p.type_ for p in node.parameters], results)
         name = self.shape_func(node.name)
 
-        return hast.Function(node.location, type_, name, node.parameters, results, body)
+        return hlast.Function(node.location, type_, name, node.parameters, results, body)
 
-    def visit_Return(self, node: hast.Return) -> hast.Return:
+    def visit_Return(self, node: hlast.Return) -> hlast.Return:
         values = [self.visit(value) for value in node.values]
         shapes = [value for value in values if isinstance(value, dict)]
         sorted_shapes = [sorted(shape.items(), key=lambda x: x[0]) for shape in shapes]
         dimless_shapes = [map(lambda x: x[1], shape) for shape in sorted_shapes]
         flattened = list(itertools.chain(*dimless_shapes))
-        return hast.Return(node.location, ts.VoidType(), flattened)
+        return hlast.Return(node.location, ts.VoidType(), flattened)
 
-    def visit_Constant(self, node: hast.Constant) -> hast.Expr:
+    def visit_Constant(self, node: hlast.Constant) -> hlast.Expr:
         return node
 
-    def visit_SymbolRef(self, node: hast.SymbolRef) -> hast.Expr | dict[concepts.Dimension, hast.Expr]:
+    def visit_SymbolRef(self, node: hlast.SymbolRef) -> hlast.Expr | dict[concepts.Dimension, hlast.Expr]:
         if isinstance(node.type_, ts.FieldType):
             sizes = {
-                dim: hast.SymbolRef(node.location, ts.IndexType(), self.shape_var(node.name, dim))
+                dim: hlast.SymbolRef(node.location, ts.IndexType(), self.shape_var(node.name, dim))
                 for dim in node.type_.dimensions
             }
             return sizes
         return node
 
-    def visit_Assign(self, node: hast.Assign) -> sir.SymbolRef:
+    def visit_Assign(self, node: hlast.Assign) -> sir.SymbolRef:
         raw_values = [self.visit(value) for value in node.values]
         names = []
         values = []
@@ -108,23 +108,23 @@ class ShapeFunctionPass(NodeTransformer):
 
         return sir.Assign(node.location, node.type_, names, values)
 
-    def visit_Shape(self, node: hast.Shape) -> hast.Expr:
+    def visit_Shape(self, node: hlast.Shape) -> hlast.Expr:
         sizes = self.visit(node.field)
         return sizes[node.dim]
 
 
-class HASTtoSIR(NodeTransformer):
+class HlastToSirPass(NodeTransformer):
     @staticmethod
     def _out_param_name(idx: int):
         return f"__out_{idx}"
 
-    def visit_Module(self, node: hast.Module) -> sir.Module:
+    def visit_Module(self, node: hlast.Module) -> sir.Module:
         loc = as_sir_loc(node.location)
         funcs = [self.visit(func) for func in node.functions]
         stencils = [self.visit(stencil) for stencil in node.stencils]
         return sir.Module(funcs, stencils, loc)
 
-    def visit_Function(self, node: hast.Function) -> sir.Function:
+    def visit_Function(self, node: hlast.Function) -> sir.Function:
         loc = as_sir_loc(node.location)
         name = node.name
         parameters = [sir.Parameter(p.name, as_sir_type(p.type_)) for p in node.parameters]
@@ -137,7 +137,7 @@ class HASTtoSIR(NodeTransformer):
         statements = [self.visit(statement) for statement in node.body]
         return sir.Function(name, [*parameters, *out_parameters], results, statements, True, loc)
 
-    def visit_Return(self, node: hast.Return) -> sir.Return:
+    def visit_Return(self, node: hlast.Return) -> sir.Return:
         loc = as_sir_loc(node.location)
         #values = [self.visit(value) for value in node.values]
         values = []
@@ -163,7 +163,7 @@ class HASTtoSIR(NodeTransformer):
 
         return sir.Return(values, loc)
 
-    def visit_Constant(self, node: hast.Constant) -> sir.Constant:
+    def visit_Constant(self, node: hlast.Constant) -> sir.Constant:
         loc = as_sir_loc(node.location)
         type_ = as_sir_type(node.type_)
         value = node.value
@@ -175,17 +175,17 @@ class HASTtoSIR(NodeTransformer):
             return sir.Constant.floating(value, type_, loc)
         raise NotImplementedError()
 
-    def visit_SymbolRef(self, node: hast.SymbolRef) -> sir.SymbolRef:
+    def visit_SymbolRef(self, node: hlast.SymbolRef) -> sir.SymbolRef:
         loc = as_sir_loc(node.location)
         name = node.name
         return sir.SymbolRef(name, loc)
 
-    def visit_Assign(self, node: hast.Assign) -> sir.SymbolRef:
+    def visit_Assign(self, node: hlast.Assign) -> sir.SymbolRef:
         loc = as_sir_loc(node.location)
         values = [self.visit(value) for value in node.values]
         return sir.Assign(node.names, values, loc)
 
-    def visit_Shape(self, node: hast.Shape) -> sir.Dim:
+    def visit_Shape(self, node: hlast.Shape) -> sir.Dim:
         loc = as_sir_loc(node.location)
         if not isinstance(node.field.type_, ts.FieldType):
             raise CompilationError(node.field.location, f"shape expects a field, got {node.field.type_}")
@@ -198,7 +198,7 @@ class HASTtoSIR(NodeTransformer):
         return sir.Dim(field, idx, loc)
 
 
-def lower(hast_module: hast.Module) -> sir.Module:
+def lower(hast_module: hlast.Module) -> sir.Module:
     shaped_module = ShapeFunctionPass().visit(hast_module)
-    sir_module = HASTtoSIR().visit(shaped_module)
+    sir_module = HlastToSirPass().visit(shaped_module)
     return sir_module

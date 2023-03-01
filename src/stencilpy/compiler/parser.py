@@ -7,7 +7,7 @@ from .symbol_table import SymbolTable
 
 import inspect
 import ast
-from stencilpy.compiler import hast
+from stencilpy.compiler import hlast
 
 from typing import Any, Optional, cast
 from collections.abc import Sequence, Mapping
@@ -20,7 +20,7 @@ def builtin_shape(transformer: Any, location: concepts.Location, args: Sequence[
     if not isinstance(dim, concepts.Dimension):
         raise CompilationError(location, "the `shape` function expects a dimension for argument 2")
 
-    return hast.Shape(location, ts.IndexType(), field, dim)
+    return hlast.Shape(location, ts.IndexType(), field, dim)
 
 
 _BUILTIN_MAPPING = {
@@ -56,18 +56,18 @@ class PythonToHAST(ast.NodeTransformer):
         self.ndims = ndims
 
     def get_ast_loc(self, node: ast.AST):
-        return hast.Location(self.file, self.start_line + node.lineno, self.start_col + node.col_offset)
+        return hlast.Location(self.file, self.start_line + node.lineno, self.start_col + node.col_offset)
 
-    def generic_visit(self, node: ast.AST, check=True) -> hast.Node:
+    def generic_visit(self, node: ast.AST, check=True) -> hlast.Node:
         if not check:
-            return cast(super().generic_visit(node), hast.Node)
+            return cast(super().generic_visit(node), hlast.Node)
         loc = self.get_ast_loc(node)
         raise UnsupportedLanguageError(loc, node)
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> hast.Function | hast.Stencil:
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> hlast.Function | hlast.Stencil:
         def sc():
             parameters = [
-                hast.Parameter(name.arg, type_)
+                hlast.Parameter(name.arg, type_)
                 for name, type_ in zip(node.args.args, self.param_types)
             ]
             for param in parameters:
@@ -77,7 +77,7 @@ class PythonToHAST(ast.NodeTransformer):
 
             results: list[ts.Type] = []
             for statement in statements:
-                if isinstance(statement, hast.Return):
+                if isinstance(statement, hlast.Return):
                     results = [expr.type_ for expr in statement.values]
 
             loc = self.get_ast_loc(node)
@@ -85,28 +85,28 @@ class PythonToHAST(ast.NodeTransformer):
             name = node.name
 
             if self.ndims is None:
-                return hast.Function(loc, type_, name, parameters, results, statements)
+                return hlast.Function(loc, type_, name, parameters, results, statements)
             else:
-                return hast.Stencil(loc, type_, name, parameters, results, statements, self.ndims)
+                return hlast.Stencil(loc, type_, name, parameters, results, statements, self.ndims)
 
         return self.symtable.scope(sc)
 
-    def visit_Return(self, node: ast.Return) -> hast.Return:
+    def visit_Return(self, node: ast.Return) -> hlast.Return:
         if isinstance(node.value, ast.Tuple):
             values = [self.visit(value) for value in node.value.elts]
         else:
             values = [self.visit(node.value)] if node.value else []
         loc = self.get_ast_loc(node)
         type_ = ts.VoidType()
-        return hast.Return(loc, type_, values)
+        return hlast.Return(loc, type_, values)
 
-    def visit_Constant(self, node: ast.Constant) -> hast.Constant:
+    def visit_Constant(self, node: ast.Constant) -> hlast.Constant:
         loc = self.get_ast_loc(node)
         type_ = ts.infer_object_type(node.value)
         value = node.value
-        return hast.Constant(loc, type_, value)
+        return hlast.Constant(loc, type_, value)
 
-    def visit_Name(self, node: ast.Name) -> hast.SymbolRef:
+    def visit_Name(self, node: ast.Name) -> hlast.SymbolRef:
         assert isinstance(node.ctx, ast.Load) # Store contexts are handled explicitly in the parent node.
 
         loc = self.get_ast_loc(node)
@@ -114,11 +114,11 @@ class PythonToHAST(ast.NodeTransformer):
         symbol_entry = self.symtable.lookup(name)
         if not symbol_entry:
             raise UndefinedSymbolError(loc, name)
-        if isinstance(symbol_entry, hast.ExternalSymbol):
+        if isinstance(symbol_entry, hlast.ExternalSymbol):
             return self._process_external_symbol(symbol_entry, loc)
-        return hast.SymbolRef(loc, symbol_entry, name)
+        return hlast.SymbolRef(loc, symbol_entry, name)
 
-    def visit_Call(self, node: ast.Call) -> hast.Expr:
+    def visit_Call(self, node: ast.Call) -> hlast.Expr:
         loc = self.get_ast_loc(node)
         if not isinstance(node.func, ast.Name):
             raise CompilationError(loc, "function call are only allowed on symbols")
@@ -127,15 +127,15 @@ class PythonToHAST(ast.NodeTransformer):
         callee_entry = self.symtable.lookup(callee)
         if not callee_entry:
             raise UndefinedSymbolError(loc, callee)
-        if isinstance(callee_entry, hast.ExternalSymbol):
+        if isinstance(callee_entry, hlast.ExternalSymbol):
             if callee_entry.name not in _BUILTIN_MAPPING:
                 raise InternalCompilerError(loc, f"builtin function `{callee_entry.name}` is not implemented")
             return _BUILTIN_MAPPING[callee](self, loc, node.args)
         raise NotImplementedError()
 
-    def _process_external_symbol(self, node: hast.ExternalSymbol, location: concepts.Location) -> Any:
+    def _process_external_symbol(self, node: hlast.ExternalSymbol, location: concepts.Location) -> Any:
         if isinstance(node.type_, (ts.IndexType, ts.IntegerType, ts.FloatType)):
-            return hast.Constant(location, node.type_, node.value)
+            return hlast.Constant(location, node.type_, node.value)
         elif isinstance(node.value, concepts.Builtin):
             return node.value
         elif isinstance(node.value, concepts.Dimension):
@@ -159,10 +159,10 @@ def add_closure_vars_to_symtable(symtable: SymbolTable, closure_vars: Mapping[st
             type_ = ts.infer_object_type(value)
         except Exception:
             type_ = ts.VoidType()
-        symtable.assign(name, hast.ExternalSymbol(loc, type_, name, value))
+        symtable.assign(name, hlast.ExternalSymbol(loc, type_, name, value))
 
 
-def parse_as_function(definition: callable, param_types: list[ts.Type], kwparam_types: dict[str, ts.Type]) -> hast.Module:
+def parse_as_function(definition: callable, param_types: list[ts.Type], kwparam_types: dict[str, ts.Type]) -> hlast.Module:
     source_code, file, start_line, start_col = get_source_code(definition)
     python_ast = ast.parse(source_code)
 
@@ -177,13 +177,13 @@ def parse_as_function(definition: callable, param_types: list[ts.Type], kwparam_
 
     transformer = PythonToHAST(file, start_line, start_col, symtable, param_types, kwparam_types)
     func = transformer.visit(python_ast.body[0])
-    assert isinstance(func, hast.Function)
+    assert isinstance(func, hlast.Function)
 
-    module = hast.Module(hast.Location.unknown(), ts.VoidType(), [func], [])
+    module = hlast.Module(hlast.Location.unknown(), ts.VoidType(), [func], [])
     return module
 
 
-def parse_as_stencil(definition: callable, param_types: list[ts.Type], kwparam_types: dict[str, ts.Type]) -> hast.Module:
+def parse_as_stencil(definition: callable, param_types: list[ts.Type], kwparam_types: dict[str, ts.Type]) -> hlast.Module:
     source_code, file, start_line, start_col = get_source_code(definition)
     python_ast = ast.parse(source_code)
 
@@ -196,7 +196,7 @@ def parse_as_stencil(definition: callable, param_types: list[ts.Type], kwparam_t
     transformer = PythonToHAST(file, start_line, start_col, symtable, param_types, kwparam_types)
 
     stencil = transformer.visit(python_ast.body[0])
-    assert isinstance(stencil, hast.Stencil)
+    assert isinstance(stencil, hlast.Stencil)
 
-    module = hast.Module(hast.Location.unknown(), ts.VoidType(), [], [stencil])
+    module = hlast.Module(hlast.Location.unknown(), ts.VoidType(), [], [stencil])
     return module
