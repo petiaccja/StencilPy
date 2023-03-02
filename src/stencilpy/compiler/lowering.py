@@ -218,6 +218,23 @@ class HlastToSirPass(NodeTransformer):
         loc = as_sir_loc(node.location)
         return sir.Index(loc)
 
+    def visit_Sample(self, node: hlast.Sample) -> sir.Sample:
+        loc = as_sir_loc(node.location)
+        assert isinstance(node.field.type_, ts.FieldType)
+        assert isinstance(node.index.type_, ts.NDIndexType)
+        try:
+            projection = [get_dim_index(node.field.type_, dim) for dim in node.index.type_.dims]
+            field = self.visit(node.field)
+            index = self.visit(node.index)
+            if sorted(projection) != projection:
+                index = sir.Project(index, projection, loc)
+            return sir.Sample(field, index, loc)
+        except KeyError:
+            raise CompilationError(
+                loc,
+                f"cannot sample field of type {node.field.type_} with index of type {node.index.type_}"
+            )
+
     def visit_Apply(self, node: hlast.Apply) -> sir.Apply:
         loc = as_sir_loc(node.location)
         callee = node.stencil.name

@@ -2,8 +2,8 @@ import numpy as np
 from stencilpy.storage import Field
 from stencilpy.concepts import Dimension
 from stencilpy.func import func, stencil
+from stencilpy.lib import index
 from .config import use_jit
-
 
 TDim = Dimension()
 UDim = Dimension()
@@ -46,7 +46,21 @@ def test_assign(use_jit):
     def fn(a: Field) -> Field:
         tmp = a
         return tmp
-    
+
     a = Field([TDim, UDim], np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float32))
     r = fn(a, jit=use_jit)
+    assert np.allclose(r.data, a.data)
+
+
+def test_sample(use_jit):
+    @stencil
+    def sn(a: Field) -> np.float32:
+        return a[index()]
+
+    @func
+    def fn(a: Field, st: int, su: int) -> Field:
+        return sn[UDim, TDim][su, st](a)
+
+    a = Field([TDim, UDim], np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float32))
+    r = fn(a, 2, 3, jit=use_jit)
     assert np.allclose(r.data, a.data)

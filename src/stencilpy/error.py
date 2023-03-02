@@ -38,3 +38,8 @@ class UnsupportedLanguageError(CompilationError):
 class MissingDimensionError(CompilationError):
     def __init__(self, location: concepts.Location, field_type: Any, dim: concepts.Dimension):
         super().__init__(location, f"field of type {field_type} has no dimension {dim}")
+
+
+class ArgumentCountError(CompilationError):
+    def __init__(self, location: concepts.Location, num_expected: int, num_provided: int):
+        super().__init__(location, f"function expects {num_expected} arguments but {num_provided} were provided")

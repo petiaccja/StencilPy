@@ -41,6 +41,10 @@ class IndexType(Type):
 class NDIndexType(Type):
     dims: list[concepts.Dimension]
 
+    def __str__(self):
+        spec = "x".join(str(v) for v in [*self.dims])
+        return f"index<{spec}>"
+
 
 @dataclasses.dataclass
 class FieldType(Type):
@@ -66,7 +70,7 @@ class FunctionType(Type):
     def __str__(self):
         params = ', '.join(str(p) for p in self.parameters)
         results = ', '.join(str(r) for r in self.results)
-        return f"({params}) -> {results}"@dataclasses.dataclass
+        return f"({params}) -> {results}"
 
 
 @dataclasses.dataclass
@@ -78,7 +82,8 @@ class StencilType(Type):
     def __str__(self):
         params = ', '.join(str(p) for p in self.parameters)
         results = ', '.join(str(r) for r in self.results)
-        return f"({params})<{self.ndim}> -> {results}"
+        dims = 'x'.join(str(dim) for dim in self.dims)
+        return f"({params}) <{dims}> -> {results}"
 
 
 def infer_object_type(arg: Any) -> Type:

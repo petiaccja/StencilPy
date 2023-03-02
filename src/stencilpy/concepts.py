@@ -34,6 +34,9 @@ class Dimension:
     def __lt__(self, other):
         return self.id < other.id
 
+    def __str__(self):
+        return f"'{self.id}"
+
 
 @dataclasses.dataclass
 class Index:

@@ -126,6 +126,12 @@ class Index(Expr):
 
 
 @dataclasses.dataclass
+class Sample(Expr):
+    field: Expr
+    index: Expr
+
+
+@dataclasses.dataclass
 class ClosureVariable(Node):
     name: str
     value: Any
