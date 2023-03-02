@@ -2,6 +2,7 @@ import itertools
 
 import stencilir as sir
 from stencilpy.compiler import hlast
+from stencilpy import utility
 from .node_transformer import NodeTransformer
 from stencilpy.compiler import types as ts
 from stencilpy.error import *
@@ -24,6 +25,34 @@ def as_sir_type(type_: ts.Type) -> sir.Type:
         return sir.FieldType(as_sir_type(type_.element_type), len(type_.dimensions))
     else:
         raise ValueError(f"no SIR type equivalent for {type_.__class__}")
+
+
+def as_sir_arithmetic(func: hlast.ArithmeticFunction) -> sir.ArithmeticFunction:
+    _MAPPING = {
+        hlast.ArithmeticFunction.ADD: sir.ArithmeticFunction.ADD,
+        hlast.ArithmeticFunction.SUB: sir.ArithmeticFunction.SUB,
+        hlast.ArithmeticFunction.MUL: sir.ArithmeticFunction.MUL,
+        hlast.ArithmeticFunction.DIV: sir.ArithmeticFunction.DIV,
+        hlast.ArithmeticFunction.MOD: sir.ArithmeticFunction.MOD,
+        hlast.ArithmeticFunction.BIT_AND: sir.ArithmeticFunction.BIT_AND,
+        hlast.ArithmeticFunction.BIT_OR: sir.ArithmeticFunction.BIT_OR,
+        hlast.ArithmeticFunction.BIT_XOR: sir.ArithmeticFunction.BIT_XOR,
+        hlast.ArithmeticFunction.BIT_SHL: sir.ArithmeticFunction.BIT_SHL,
+        hlast.ArithmeticFunction.BIT_SHR: sir.ArithmeticFunction.BIT_SHR,
+    }
+    return _MAPPING[func]
+
+
+def as_sir_comparison(func: hlast.ComparisonFunction) -> sir.ComparisonFunction:
+    _MAPPING = {
+        hlast.ComparisonFunction.EQ: sir.ComparisonFunction.EQ,
+        hlast.ComparisonFunction.NEQ: sir.ComparisonFunction.NEQ,
+        hlast.ComparisonFunction.LT: sir.ComparisonFunction.LT,
+        hlast.ComparisonFunction.GT: sir.ComparisonFunction.GT,
+        hlast.ComparisonFunction.LTE: sir.ComparisonFunction.LTE,
+        hlast.ComparisonFunction.GTE: sir.ComparisonFunction.GTE,
+    }
+    return _MAPPING[func]
 
 
 def get_dim_index(type_: ts.FieldType, dim: concepts.Dimension):
@@ -116,8 +145,22 @@ class ShapeFunctionPass(NodeTransformer):
         shape = {dim: self.visit(size) for dim, size in node.shape.items()}
         return shape
 
+    def visit_ArithmeticOperation(self, node: hlast.ArithmeticOperation):
+        lhs = self.visit(node.lhs)
+        rhs = self.visit(node.rhs)
+        return hlast.ArithmeticOperation(node.location, node.type_, lhs, rhs, node.func)
+
+    def visit_ElementwiseOperation(self, node: hlast.ElementwiseOperation) -> dict[concepts.Dimension, hlast.Expr]:
+        shape = self.visit(node.args[0])
+        return shape
+
 
 class HlastToSirPass(NodeTransformer):
+    immediate_stencils: list[sir.Stencil]
+
+    def __init__(self):
+        self.immediate_stencils = []
+
     @staticmethod
     def _out_param_name(idx: int):
         return f"__out_{idx}"
@@ -126,7 +169,8 @@ class HlastToSirPass(NodeTransformer):
         loc = as_sir_loc(node.location)
         funcs = [self.visit(func) for func in node.functions]
         stencils = [self.visit(stencil) for stencil in node.stencils]
-        return sir.Module(funcs, stencils, loc)
+        all_stencils = [*self.immediate_stencils, *stencils]
+        return sir.Module(funcs, all_stencils, loc)
 
     def visit_Function(self, node: hlast.Function) -> sir.Function:
         loc = as_sir_loc(node.location)
@@ -248,6 +292,43 @@ class HlastToSirPass(NodeTransformer):
         outputs = [sir.AllocTensor(dtype, shape, loc)]
         return sir.Apply(callee, inputs, outputs, [], [0]*len(shape), loc)
 
+    def visit_ArithmeticOperation(self, node: hlast.ArithmeticOperation):
+        loc = as_sir_loc(node.location)
+        lhs = self.visit(node.lhs)
+        rhs = self.visit(node.rhs)
+        func = as_sir_arithmetic(node.func)
+        return sir.ArithmeticOperator(lhs, rhs, func, loc)
+
+    def visit_ElementwiseOperation(self, node: hlast.ElementwiseOperation):
+        loc = as_sir_loc(node.location)
+        args = [self.visit(arg) for arg in node.args]
+        names = [f"__elemwise_arg{i}" for i in range(len(args))]
+        arg_assign = sir.Assign(names, args, loc)
+        arg_refs = [sir.SymbolRef(name, loc) for name in names]
+        assert isinstance(node.type_, ts.FieldType)
+        ndims = len(node.type_.dimensions)
+        shape = [sir.Dim(arg_refs[0], sir.Constant.index(i, loc), loc) for i in range(ndims)]
+        dtype = as_sir_type(node.type_.element_type)
+        output = sir.AllocTensor(dtype, shape, loc)
+        stencil = self._elementwise_stencil(node)
+        self.immediate_stencils.append(self.visit(stencil))
+        apply = sir.Apply(stencil.name, args, [output], [], [0]*len(shape), loc)
+        return sir.Block([arg_assign, sir.Yield([apply], loc)], loc)
+
+    def _elementwise_stencil(self, node: hlast.ElementwiseOperation):
+        assert isinstance(node.type_, ts.FieldType)
+        loc = node.location
+        name = f"__elemwise_sn_{next(utility.unique_id)}"
+        type_ = ts.StencilType([arg.type_ for arg in node.args], [node.type_.element_type], node.type_.dimensions)
+        parameters = [hlast.Parameter(f"__arg{i}", p_type) for i, p_type in enumerate(type_.parameters)]
+        arg_refs = [hlast.SymbolRef(loc, p_type, f"__arg{i}") for i, p_type in enumerate(type_.parameters)]
+        ndindex_type = ts.NDIndexType(type_.dims)
+        samples = [
+            hlast.Sample(loc, arg_ref.type_.element_type, arg_ref, hlast.Index(loc, ndindex_type))
+            for arg_ref in arg_refs
+        ]
+        body = [hlast.Return(loc, type_.results[0], [node.element_expr(samples)])]
+        return hlast.Stencil(loc, type_, name, parameters, type_.results, body, type_.dims)
 
 def lower(hast_module: hlast.Module) -> sir.Module:
     shaped_module = ShapeFunctionPass().visit(hast_module)

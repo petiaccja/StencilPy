@@ -43,3 +43,18 @@ class MissingDimensionError(CompilationError):
 class ArgumentCountError(CompilationError):
     def __init__(self, location: concepts.Location, num_expected: int, num_provided: int):
         super().__init__(location, f"function expects {num_expected} arguments but {num_provided} were provided")
+
+
+class ArgumentTypeError(CompilationError):
+    def __init__(self, location: concepts.Location, expected_types: list, provided_types: list):
+        expected = [', '.join(str(t) for t in expected_types)]
+        provided = [', '.join(str(t) for t in provided_types)]
+        super().__init__(
+            location,
+            f"function expects argument types {expected} but types {provided} were provided"
+        )
+
+class ArgumentCompatibilityError(CompilationError):
+    def __init__(self, location: concepts.Location, operation: str, arg_types: list):
+        args = [', '.join(str(t) for t in arg_types)]
+        super().__init__(location, f"{operation} does not accept arguments of incompatible type {args}")

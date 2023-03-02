@@ -64,3 +64,23 @@ def test_sample(use_jit):
     a = Field([TDim, UDim], np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float32))
     r = fn(a, 2, 3, jit=use_jit)
     assert np.allclose(r.data, a.data)
+
+
+def test_arithmetic_scalar(use_jit):
+    @func
+    def fn(a: int, b: int) -> int:
+        return a + b
+
+    r = fn(2, 3, jit=use_jit)
+    assert r == 5
+
+
+def test_arithmetic_field(use_jit):
+    @func
+    def fn(a: Field, b: Field) -> Field:
+        return a + b
+
+    a = Field([TDim, UDim], np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float32))
+    b = Field([TDim, UDim], np.array([[6, 5, 4], [3, 2, 1]], dtype=np.float32))
+    r = fn(a, b, jit=use_jit)
+    assert np.allclose(r.data, a.data + b.data)

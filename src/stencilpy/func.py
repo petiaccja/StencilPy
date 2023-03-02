@@ -8,6 +8,7 @@ from stencilpy import concepts
 from stencilpy import lib
 from stencilpy.compiler import hlast
 from stencilpy.compiler import parser
+from stencilpy.compiler import utility
 
 import stencilir as sir
 from stencilpy.compiler import types as ts
@@ -98,7 +99,7 @@ class JitFunction:
 
     def call_jit(self, *args, **kwargs):
         arg_types = [ts.infer_object_type(arg) for arg in args]
-        func_name = parser.mangle_name(self.definition.__name__, arg_types)
+        func_name = utility.mangle_name(self.definition.__name__, arg_types)
         kwarg_types = {name: ts.infer_object_type(value) for name, value in kwargs.items()}
         hast_module = self.parse(arg_types, kwarg_types)
         signature = _get_signature(hast_module, func_name)
