@@ -121,6 +121,11 @@ class Shape(Expr):
 
 
 @dataclasses.dataclass
+class Index(Expr):
+    pass
+
+
+@dataclasses.dataclass
 class ClosureVariable(Node):
     name: str
     value: Any

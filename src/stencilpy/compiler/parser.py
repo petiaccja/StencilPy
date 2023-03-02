@@ -13,6 +13,13 @@ from typing import Any, Optional, cast, Callable
 from collections.abc import Sequence, Mapping
 
 
+@dataclasses.dataclass
+class FunctionDefInfo:
+    param_types: list[ts.Type]
+    kwparam_types: dict[str, ts.Type]
+    dims: Optional[list[concepts.Dimension]]
+
+
 def builtin_shape(transformer: Any, location: concepts.Location, args: Sequence[ast.AST]):
     assert len(args) == 2
     field = transformer.visit(args[0])
@@ -23,8 +30,21 @@ def builtin_shape(transformer: Any, location: concepts.Location, args: Sequence[
     return hlast.Shape(location, ts.IndexType(), field, dim)
 
 
+def builtin_index(transformer: "PythonToHlast", location: concepts.Location, args: Sequence[ast.AST]):
+    function_def_info: Optional[FunctionDefInfo] = None
+    for info in transformer.symtable.infos():
+        if isinstance(info, FunctionDefInfo):
+            function_def_info = info
+            break
+    if not function_def_info:
+        raise CompilationError(location, "index expression must be used inside a stencil's body")
+    type_ = ts.NDIndexType(function_def_info.dims)
+    return hlast.Index(location, type_)
+
+
 _BUILTIN_MAPPING = {
-    "shape": builtin_shape
+    "shape": builtin_shape,
+    "index": builtin_index,
 }
 
 
@@ -86,7 +106,11 @@ class PythonToHlast(ast.NodeTransformer):
             kwparam_types: dict[str, ts.Type] = None,
             dims: Optional[list[concepts.Dimension]] = None,
     ) -> hlast.Function | hlast.Stencil:
+        assert param_types is not None
+        assert kwparam_types is not None
         def sc():
+            loc = self.get_ast_loc(node)
+            name = mangle_name(node.name, param_types, dims)
             parameters = [
                 hlast.Parameter(name.arg, type_)
                 for name, type_ in zip(node.args.args, param_types)
@@ -101,9 +125,6 @@ class PythonToHlast(ast.NodeTransformer):
                 if isinstance(statement, hlast.Return):
                     results = [expr.type_ for expr in statement.values]
 
-            loc = self.get_ast_loc(node)
-            name = mangle_name(node.name, param_types, dims)
-
             if dims is None:
                 type_ = ts.FunctionType(param_types, results)
                 return hlast.Function(loc, type_, name, parameters, results, statements)
@@ -111,7 +132,7 @@ class PythonToHlast(ast.NodeTransformer):
                 type_ = ts.StencilType(param_types, results, dims)
                 return hlast.Stencil(loc, type_, name, parameters, results, statements, dims)
 
-        return self.symtable.scope(sc)
+        return self.symtable.scope(sc, FunctionDefInfo(param_types, kwparam_types, dims))
 
     def visit_Return(self, node: ast.Return) -> hlast.Return:
         if isinstance(node.value, ast.Tuple):
@@ -167,6 +188,9 @@ class PythonToHlast(ast.NodeTransformer):
         for name, value in zip(names, values):
             self.symtable.assign(name, value.type_)
         return hlast.Assign(loc, ts.VoidType(), names, values)
+
+    def visit_Expr(self, node: ast.Expr) -> Any:
+        return self.visit(node.value)
 
     def _visit_call_builtin(self, node: ast.Call) -> Optional[hlast.Expr]:
         loc = self.get_ast_loc(node)
@@ -233,10 +257,9 @@ class PythonToHlast(ast.NodeTransformer):
             assert len(python_ast.body) == 1
             assert isinstance(python_ast.body[0], ast.FunctionDef)
 
-            symtable = SymbolTable()
             closure_vars = inspect.getclosurevars(definition)
-            add_closure_vars_to_symtable(symtable, closure_vars.globals)
-            add_closure_vars_to_symtable(symtable, closure_vars.nonlocals)
+            add_closure_vars_to_symtable(self.symtable, closure_vars.globals)
+            add_closure_vars_to_symtable(self.symtable, closure_vars.nonlocals)
 
             instantiation = self.visit_FunctionDef(
                 python_ast.body[0],

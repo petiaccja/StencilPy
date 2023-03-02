@@ -38,6 +38,11 @@ class IndexType(Type):
 
 
 @dataclasses.dataclass
+class NDIndexType(Type):
+    dims: list[concepts.Dimension]
+
+
+@dataclasses.dataclass
 class FieldType(Type):
     element_type: Type
     dimensions: list[concepts.Dimension]

@@ -188,7 +188,7 @@ class HlastToSirPass(NodeTransformer):
             return sir.Constant.index(value, loc)
         elif isinstance(type_, sir.IntegerType):
             return sir.Constant.integral(value, type_, loc)
-        elif isinstance(type_, sir.IntegerType):
+        elif isinstance(type_, sir.FloatType):
             return sir.Constant.floating(value, type_, loc)
         raise NotImplementedError()
 
@@ -213,6 +213,10 @@ class HlastToSirPass(NodeTransformer):
         field = self.visit(node.field)
         idx = sir.Constant.index(idx_val, loc)
         return sir.Dim(field, idx, loc)
+
+    def visit_Index(self, node: hlast.Index) -> sir.Dim:
+        loc = as_sir_loc(node.location)
+        return sir.Index(loc)
 
     def visit_Apply(self, node: hlast.Apply) -> sir.Apply:
         loc = as_sir_loc(node.location)
