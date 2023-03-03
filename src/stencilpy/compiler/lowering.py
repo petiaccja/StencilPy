@@ -55,11 +55,27 @@ def as_sir_comparison(func: hlast.ComparisonFunction) -> sir.ComparisonFunction:
     return _MAPPING[func]
 
 
-def get_dim_index(type_: ts.FieldType, dim: concepts.Dimension):
+def get_dim_index(dimensions: list[concepts.Dimension], dim: concepts.Dimension):
     try:
-        return type_.dimensions.index(dim)
+        return dimensions.index(dim)
     except ValueError:
         raise KeyError(f"dimension {dim} is not associated with field")
+
+
+def elementwise_dims_to_arg(
+        dimensions: list[concepts.Dimension],
+        arg_types: list[ts.Type]
+) -> dict[concepts.Dimension, int]:
+    dims_to_arg: dict[concepts.Dimension, int] = {}
+    for dim in dimensions:
+        for arg_idx, type_ in enumerate(arg_types):
+            if not isinstance(type_, ts.FieldType):
+                continue
+            arg_dims = type_.dimensions
+            if not dim in arg_dims:
+                continue
+            dims_to_arg[dim] = arg_idx
+    return dims_to_arg
 
 
 class ShapeFunctionPass(NodeTransformer):
@@ -151,7 +167,15 @@ class ShapeFunctionPass(NodeTransformer):
         return hlast.ArithmeticOperation(node.location, node.type_, lhs, rhs, node.func)
 
     def visit_ElementwiseOperation(self, node: hlast.ElementwiseOperation) -> dict[concepts.Dimension, hlast.Expr]:
-        shape = self.visit(node.args[0])
+        assert isinstance(node.type_, ts.FieldType)
+        dimensions = node.type_.dimensions
+        arg_types = [arg.type_ for arg in node.args]
+        arg_shapes = [self.visit(arg) for arg in node.args]
+        dims_to_arg = elementwise_dims_to_arg(dimensions, arg_types)
+        shape = {
+            dim: arg_shapes[arg_idx][dim]
+            for dim, arg_idx in dims_to_arg.items()
+        }
         return shape
 
 
@@ -251,7 +275,7 @@ class HlastToSirPass(NodeTransformer):
         if not isinstance(node.field.type_, ts.FieldType):
             raise CompilationError(node.field.location, f"shape expects a field, got {node.field.type_}")
         try:
-            idx_val = get_dim_index(node.field.type_, node.dim)
+            idx_val = get_dim_index(node.field.type_.dimensions, node.dim)
         except KeyError:
             raise MissingDimensionError(node.location, node.field.type_, node.dim)
         field = self.visit(node.field)
@@ -267,10 +291,10 @@ class HlastToSirPass(NodeTransformer):
         assert isinstance(node.field.type_, ts.FieldType)
         assert isinstance(node.index.type_, ts.NDIndexType)
         try:
-            projection = [get_dim_index(node.field.type_, dim) for dim in node.index.type_.dims]
+            projection = [get_dim_index(node.index.type_.dims, dim) for dim in node.field.type_.dimensions]
             field = self.visit(node.field)
             index = self.visit(node.index)
-            if sorted(projection) != projection:
+            if sorted(projection) != [range(len(node.field.type_.dimensions))]:
                 index = sir.Project(index, projection, loc)
             return sir.Sample(field, index, loc)
         except KeyError:
@@ -306,8 +330,17 @@ class HlastToSirPass(NodeTransformer):
         arg_assign = sir.Assign(names, args, loc)
         arg_refs = [sir.SymbolRef(name, loc) for name in names]
         assert isinstance(node.type_, ts.FieldType)
-        ndims = len(node.type_.dimensions)
-        shape = [sir.Dim(arg_refs[0], sir.Constant.index(i, loc), loc) for i in range(ndims)]
+
+        dims_to_arg = elementwise_dims_to_arg(node.type_.dimensions, [arg.type_ for arg in node.args])
+        shape = [
+            sir.Dim(
+                arg_refs[arg_idx],
+                sir.Constant.index(get_dim_index(node.args[arg_idx].type_.dimensions, dim), loc),
+                loc
+            )
+            for dim, arg_idx in dims_to_arg.items()
+        ]
+
         dtype = as_sir_type(node.type_.element_type)
         output = sir.AllocTensor(dtype, shape, loc)
         stencil = self._elementwise_stencil(node)

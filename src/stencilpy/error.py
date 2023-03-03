@@ -56,5 +56,5 @@ class ArgumentTypeError(CompilationError):
 
 class ArgumentCompatibilityError(CompilationError):
     def __init__(self, location: concepts.Location, operation: str, arg_types: list):
-        args = [', '.join(str(t) for t in arg_types)]
+        args = ', '.join(str(t) for t in arg_types)
         super().__init__(location, f"{operation} does not accept arguments of incompatible type {args}")

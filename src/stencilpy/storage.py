@@ -1,9 +1,28 @@
 import dataclasses
-from typing import Sequence
+from collections.abc import Sequence
+from typing import Callable
 
 import numpy as np
 
 from stencilpy import concepts
+
+
+def merge_dims(
+        dims1: Sequence[concepts.Dimension],
+        dims2: Sequence[concepts.Dimension]
+) -> list[concepts.Dimension]:
+    return sorted(list(set(dims1) | set(dims2)))
+
+
+def broadcast_shape(
+        dims: Sequence[concepts.Dimension],
+        broadcast_dims: Sequence[concepts.Dimension],
+        shape: Sequence[int]
+) -> tuple[int]:
+    return tuple(
+        shape[dims.index(dim)] if dim in dims else 1
+        for dim in broadcast_dims
+    )
 
 
 @dataclasses.dataclass
@@ -25,25 +44,25 @@ class Field:
         self.sorted_dimensions = [dim for dim, _ in sorted_dimensions]
         self.data = np.moveaxis(data, range(data.ndim), [index for _, index in sorted_dimensions])
 
+    def _elementwise_op(self, other: "Field", op: Callable[[np.ndarray, np.ndarray], np.ndarray]) -> "Field":
+        bcast_dims = merge_dims(self.sorted_dimensions, other.sorted_dimensions)
+        self_new_shape = broadcast_shape(self.sorted_dimensions, bcast_dims, self.data.shape)
+        other_new_shape = broadcast_shape(other.sorted_dimensions, bcast_dims, other.data.shape)
+        self_reshaped = np.reshape(self.data, self_new_shape)
+        other_reshaped = np.reshape(other.data, other_new_shape)
+        return Field(bcast_dims, op(self_reshaped, other_reshaped))
+
     def __add__(self, other: "Field") -> "Field":
-        assert self.sorted_dimensions == other.sorted_dimensions
-        new_data = self.data + other.data
-        return Field(self.sorted_dimensions, new_data)
+        return self._elementwise_op(other, lambda x, y: x + y)
 
     def __sub__(self, other: "Field") -> "Field":
-        assert self.sorted_dimensions == other.sorted_dimensions
-        new_data = self.data - other.data
-        return Field(self.sorted_dimensions, new_data)
+        return self._elementwise_op(other, lambda x, y: x - y)
 
     def __mul__(self, other: "Field") -> "Field":
-        assert self.sorted_dimensions == other.sorted_dimensions
-        new_data = self.data * other.data
-        return Field(self.sorted_dimensions, new_data)
+        return self._elementwise_op(other, lambda x, y: x * y)
 
     def __truediv__(self, other: "Field") -> "Field":
-        assert self.sorted_dimensions == other.sorted_dimensions
-        new_data = self.data / other.data
-        return Field(self.sorted_dimensions, new_data)
+        return self._elementwise_op(other, lambda x, y: x / y)
 
     def __getitem__(self, dimensions: concepts.Index | tuple[concepts.Dimension, ...]):
         if isinstance(dimensions, concepts.Index):

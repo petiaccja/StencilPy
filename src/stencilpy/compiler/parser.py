@@ -193,13 +193,15 @@ class PythonToHlast(ast.NodeTransformer):
 
         is_lhs_field = isinstance(lhs.type_, ts.FieldType)
         is_rhs_field = isinstance(rhs.type_, ts.FieldType)
-        if is_lhs_field and is_rhs_field:
-            if lhs.type_.dimensions != rhs.type_.dimensions:
-                raise ArgumentCompatibilityError(loc, f"operator {func}", [lhs.type_, rhs.type_])
-            type_ = lhs.type_  # TODO: promote to common type
+        lhs_element_type = lhs.type_.element_type if is_lhs_field else lhs.type_
+        rhs_element_type = rhs.type_.element_type if is_rhs_field else rhs.type_
+        lhs_dimensions = lhs.type_.dimensions if is_lhs_field else []
+        rhs_dimensions = rhs.type_.dimensions if is_rhs_field else []
+        if is_lhs_field or is_rhs_field:
+            element_type = lhs_element_type  # TODO: promote to common type
+            dimensions = sorted(list(set(lhs_dimensions) | set(rhs_dimensions)))
+            type_ = ts.FieldType(element_type, dimensions)
             return hlast.ElementwiseOperation(loc, type_, [lhs, rhs], builder)
-        elif is_lhs_field or is_rhs_field:
-            raise ArgumentCompatibilityError(loc, f"operator {func}", [lhs.type_, rhs.type_])
         else:
             return builder([lhs, rhs])
 

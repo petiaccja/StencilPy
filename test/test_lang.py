@@ -84,3 +84,14 @@ def test_arithmetic_field(use_jit):
     b = Field([TDim, UDim], np.array([[6, 5, 4], [3, 2, 1]], dtype=np.float32))
     r = fn(a, b, jit=use_jit)
     assert np.allclose(r.data, a.data + b.data)
+
+def test_arithmetic_broadcast(use_jit):
+    @func
+    def fn(a: Field, b: Field) -> Field:
+        return a + b
+
+    a = Field([TDim], np.array([1, 2, 3], dtype=np.float32))
+    b = Field([UDim], np.array([4, 5, 6], dtype=np.float32))
+    r = fn(a, b, jit=use_jit)
+    e = np.reshape(a.data, (3, 1)) + np.reshape(b.data, (1, 3))
+    assert np.allclose(r.data, e)
