@@ -206,7 +206,50 @@ class PythonToHlast(ast.NodeTransformer):
             return builder([lhs, rhs])
 
     def visit_Compare(self, node: ast.Compare) -> Any:
-        raise NotImplementedError()
+        loc = self.get_ast_loc(node)
+        operands = [self.visit(operand) for operand in [node.left, *node.comparators]]
+        funcs = [self.visit(op) for op in node.ops]
+
+        bool_type = ts.IntegerType(1, True)
+        def builder(args: list[hlast.Expr]) -> hlast.Expr:
+            args_names = [f"__cmp_operand{i}" for i in range(len(args))]
+            args_assign = hlast.Assign(loc, ts.VoidType(), args_names, args)
+            args_refs = [hlast.SymbolRef(loc, v.type_, name) for v, name in zip(args, args_names)]
+
+            c_true = hlast.Constant(loc, bool_type, 1)
+            c_false = hlast.Constant(loc, bool_type, 0)
+            expr = c_true
+            for i in range(len(funcs) - 1, -1, -1):
+                func = funcs[i]
+                lhs = args_refs[i]
+                rhs = args_refs[i + 1]
+                cmp = hlast.ComparisonOperation(loc, bool_type, lhs, rhs, func)
+                expr = hlast.If(
+                    loc, bool_type, cmp,
+                    [hlast.Yield(loc, bool_type, [expr])],
+                    [hlast.Yield(loc, bool_type, [c_false])]
+                )
+            return hlast.If(
+                loc, bool_type, c_true,
+                [args_assign, hlast.Yield(loc, bool_type, [expr])],
+                [hlast.Yield(loc, bool_type, [c_false])]
+            )
+
+        is_operand_field = [isinstance(arg.type_, ts.FieldType) for arg in operands]
+        operand_dimensions = [
+            arg.type_.dimensions if is_field else []
+            for is_field, arg in zip(is_operand_field, operands)
+        ]
+        if any(is_operand_field):
+            element_type = ts.IntegerType(1, False)
+            merged_dims = set()
+            for dims in operand_dimensions:
+                merged_dims = merged_dims | dims
+            dimensions = sorted(list(merged_dims))
+            type_ = ts.FieldType(element_type, dimensions)
+            return hlast.ElementwiseOperation(loc, type_, operands, builder)
+        else:
+            return builder(operands)
 
     def visit_Expr(self, node: ast.Expr) -> Any:
         return self.visit(node.value)

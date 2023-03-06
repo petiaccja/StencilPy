@@ -166,6 +166,11 @@ class ShapeFunctionPass(NodeTransformer):
         rhs = self.visit(node.rhs)
         return hlast.ArithmeticOperation(node.location, node.type_, lhs, rhs, node.func)
 
+    def visit_ComparisonOperation(self, node: hlast.ComparisonOperation):
+        lhs = self.visit(node.lhs)
+        rhs = self.visit(node.rhs)
+        return hlast.ComparisonOperation(node.location, node.type_, lhs, rhs, node.func)
+
     def visit_ElementwiseOperation(self, node: hlast.ElementwiseOperation) -> dict[concepts.Dimension, hlast.Expr]:
         assert isinstance(node.type_, ts.FieldType)
         dimensions = node.type_.dimensions
@@ -177,6 +182,25 @@ class ShapeFunctionPass(NodeTransformer):
             for dim, arg_idx in dims_to_arg.items()
         }
         return shape
+
+    def visit_If(self, node: hlast.If):
+        loc = node.location
+        type_ = node.type_
+
+        if isinstance(node.type_, ts.FieldType):
+            raise CompilationError(loc, "yielding field expressions are not supported from ifs")
+
+        cond = self.visit(node.cond)
+        then_body = [self.visit(statement) for statement in node.then_body]
+        else_body = [self.visit(statement) for statement in node.else_body]
+        return hlast.If(loc, type_, cond, then_body, else_body)
+
+    def visit_Yield(self, node: hlast.Yield):
+        loc = node.location
+        type_ = node.type_
+        values = [self.visit(value) for value in node.values]
+        return hlast.Yield(loc, type_, values)
+
 
 
 class HlastToSirPass(NodeTransformer):
@@ -323,6 +347,13 @@ class HlastToSirPass(NodeTransformer):
         func = as_sir_arithmetic(node.func)
         return sir.ArithmeticOperator(lhs, rhs, func, loc)
 
+    def visit_ComparisonOperation(self, node: hlast.ComparisonOperation):
+        loc = as_sir_loc(node.location)
+        lhs = self.visit(node.lhs)
+        rhs = self.visit(node.rhs)
+        func = as_sir_comparison(node.func)
+        return sir.ComparisonOperator(lhs, rhs, func, loc)
+
     def visit_ElementwiseOperation(self, node: hlast.ElementwiseOperation):
         loc = as_sir_loc(node.location)
         args = [self.visit(arg) for arg in node.args]
@@ -347,6 +378,18 @@ class HlastToSirPass(NodeTransformer):
         self.immediate_stencils.append(self.visit(stencil))
         apply = sir.Apply(stencil.name, args, [output], [], [0]*len(shape), loc)
         return sir.Block([arg_assign, sir.Yield([apply], loc)], loc)
+
+    def visit_If(self, node: hlast.If):
+        loc = as_sir_loc(node.location)
+        cond = self.visit(node.cond)
+        then_body = [self.visit(statement) for statement in node.then_body]
+        else_body = [self.visit(statement) for statement in node.else_body]
+        return sir.If(cond, then_body, else_body, loc)
+
+    def visit_Yield(self, node: hlast.Yield):
+        loc = as_sir_loc(node.location)
+        values = [self.visit(value) for value in node.values]
+        return sir.Yield(values, loc)
 
     def _elementwise_stencil(self, node: hlast.ElementwiseOperation):
         assert isinstance(node.type_, ts.FieldType)

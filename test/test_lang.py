@@ -85,6 +85,7 @@ def test_arithmetic_field(use_jit):
     r = fn(a, b, jit=use_jit)
     assert np.allclose(r.data, a.data + b.data)
 
+
 def test_arithmetic_broadcast(use_jit):
     @func
     def fn(a: Field, b: Field) -> Field:
@@ -95,3 +96,14 @@ def test_arithmetic_broadcast(use_jit):
     r = fn(a, b, jit=use_jit)
     e = np.reshape(a.data, (3, 1)) + np.reshape(b.data, (1, 3))
     assert np.allclose(r.data, e)
+
+
+def test_comparison_scalar(use_jit):
+    @func
+    def fn(a: int, b: int, c: int) -> bool:
+        return a < b < c
+
+    r = fn(2, 3, 4, jit=use_jit)
+    assert r
+    r = fn(2, 3, 1, jit=use_jit)
+    assert not r  # It is None when it should in fact be False

@@ -132,6 +132,18 @@ class Sample(Expr):
 
 
 @dataclasses.dataclass
+class If(Expr):
+    cond: Expr
+    then_body: list[Statement]
+    else_body: list[Statement]
+
+
+@dataclasses.dataclass
+class Yield(Statement):
+    values: list[Expr]
+
+
+@dataclasses.dataclass
 class ClosureVariable(Node):
     name: str
     value: Any
