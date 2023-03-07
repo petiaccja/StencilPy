@@ -264,6 +264,30 @@ class PythonToHlast(ast.NodeTransformer):
         else:
             return builder(operands)
 
+    def visit_UnaryOp(self, node: ast.UnaryOp) -> hlast.Expr:
+        loc = self.get_ast_loc(node)
+        value = self.visit(node.operand)
+        type_ = value.type_.element_type if isinstance(value.type_, ts.FieldType) else value.type_
+        if isinstance(node.op, ast.UAdd):
+            return value
+        elif isinstance(node.op, ast.USub):
+            sign_val = -1.0 if isinstance(type_, ts.FloatType) else -1
+            c_sign = hlast.Constant(loc, type_, sign_val)
+            return hlast.ArithmeticOperation(loc, value.type_, c_sign, value, hlast.ArithmeticFunction.MUL)
+        elif isinstance(node.op, ast.Invert):
+            if not isinstance(type_, (ts.IndexType, ts.IntegerType)):
+                raise ArgumentCompatibilityError(loc, "bit inversion", [type_])
+            c_bitmask = hlast.Constant(loc, type_, -1)
+            return hlast.ArithmeticOperation(loc, value.type_, c_bitmask, value, hlast.ArithmeticFunction.BIT_XOR)
+        elif isinstance(node.op, ast.Not):
+            bool_t = ts.IntegerType(1, True)
+            compare_val = 0.0 if isinstance(type_, ts.FloatType) else 0
+            c_compare = hlast.Constant(loc, type_, compare_val)
+            c_bitmask = hlast.Constant(loc, type_, 1)
+            boolified = hlast.ComparisonOperation(loc, bool_t, value, c_compare, hlast.ComparisonFunction.NEQ)
+            return hlast.ArithmeticOperation(loc, bool_t, c_bitmask, boolified, hlast.ArithmeticFunction.BIT_XOR)
+        raise CompilationError(loc, f"unary operator {type(node.op)} not implemented")
+
     def visit_Slice(self, node: ast.Slice) -> hlast.Slice:
         loc = self.get_ast_loc(node)
         global invalid_dim

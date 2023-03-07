@@ -508,7 +508,7 @@ class HlastToSirPass(NodeTransformer):
         output = sir.AllocTensor(dtype, shape, loc)
         stencil = self._elementwise_stencil(node)
         self.immediate_stencils.append(self.visit(stencil))
-        apply = sir.Apply(stencil.name, args, [output], [], [0]*len(shape), loc)
+        apply = sir.Apply(stencil.name, arg_refs, [output], [], [0]*len(shape), loc)
         return sir.Block([arg_assign, sir.Yield([apply], loc)], loc)
 
     def visit_If(self, node: hlast.If) -> sir.If:
@@ -536,10 +536,12 @@ class HlastToSirPass(NodeTransformer):
         source_ref = sir.SymbolRef("__extract_slice_src", loc)
 
         index_type = sir.IndexType()
-        lowers = [sir.Cast(self.visit(lower_lookup[dim]), index_type, loc) for dim in dimensions]
-        uppers = [sir.Cast(self.visit(upper_lookup[dim]), index_type, loc) for dim in dimensions]
-        steps = [sir.Cast(self.visit(step_lookup[dim]), index_type, loc) for dim in dimensions]
+        def as_index(expr: sir.Expression):
+            return sir.Cast(expr, index_type, loc)
         shape = [sir.Dim(source_ref, sir.Constant.index(i, loc), loc) for i in range(len(dimensions))]
+        lowers = [as_index(self.visit(lower_lookup[dim])) for dim in dimensions]
+        uppers = [as_index(self.visit(upper_lookup[dim])) if upper_lookup[dim] else shape for dim, shape in zip(dimensions, shape)]
+        steps = [as_index(self.visit(step_lookup[dim])) for dim in dimensions]
 
         lowers_norm = [sir.Call("__normalize_lower", [lower, size], loc) for lower, size in zip(lowers, shape)]
         sizes = [

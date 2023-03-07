@@ -44,28 +44,45 @@ class Field:
         self.sorted_dimensions = [dim for dim, _ in sorted_dimensions]
         self.data = np.moveaxis(data, range(data.ndim), [index for _, index in sorted_dimensions])
 
-    def _elementwise_op(self, other: Any, op: Callable[[np.ndarray, np.ndarray], np.ndarray]) -> "Field":
-        if isinstance(other, Field):
-            bcast_dims = merge_dims(self.sorted_dimensions, other.sorted_dimensions)
-            self_new_shape = broadcast_shape(self.sorted_dimensions, bcast_dims, self.data.shape)
-            other_new_shape = broadcast_shape(other.sorted_dimensions, bcast_dims, other.data.shape)
-            self_reshaped = np.reshape(self.data, self_new_shape)
-            other_reshaped = np.reshape(other.data, other_new_shape)
+    @staticmethod
+    def _elementwise_op(lhs: Any, rhs: Any, op: Callable[[np.ndarray, np.ndarray], np.ndarray]) -> "Field":
+        if isinstance(lhs, Field) and isinstance(rhs, Field):
+            bcast_dims = merge_dims(lhs.sorted_dimensions, rhs.sorted_dimensions)
+            self_new_shape = broadcast_shape(lhs.sorted_dimensions, bcast_dims, lhs.data.shape)
+            other_new_shape = broadcast_shape(rhs.sorted_dimensions, bcast_dims, rhs.data.shape)
+            self_reshaped = np.reshape(lhs.data, self_new_shape)
+            other_reshaped = np.reshape(rhs.data, other_new_shape)
             return Field(bcast_dims, op(self_reshaped, other_reshaped))
+        elif isinstance(lhs, Field):
+            return Field(lhs.sorted_dimensions, op(lhs.data, rhs))
+        elif isinstance(rhs, Field):
+            return Field(rhs.sorted_dimensions, op(lhs, rhs.data))
         else:
-            return Field(self.sorted_dimensions, op(self.data, other))
+            raise TypeError("expected field type for either lhs or rhs")
 
     def __add__(self, other: "Field") -> "Field":
-        return self._elementwise_op(other, lambda x, y: x + y)
+        return self._elementwise_op(self, other, lambda x, y: x + y)
 
     def __sub__(self, other: "Field") -> "Field":
-        return self._elementwise_op(other, lambda x, y: x - y)
+        return self._elementwise_op(self, other, lambda x, y: x - y)
 
     def __mul__(self, other: "Field") -> "Field":
-        return self._elementwise_op(other, lambda x, y: x * y)
+        return self._elementwise_op(self, other, lambda x, y: x * y)
 
     def __truediv__(self, other: "Field") -> "Field":
-        return self._elementwise_op(other, lambda x, y: x / y)
+        return self._elementwise_op(self, other, lambda x, y: x / y)
+
+    def __radd__(self, other: "Field") -> "Field":
+        return self._elementwise_op(other, self, lambda x, y: x + y)
+
+    def __rsub__(self, other: "Field") -> "Field":
+        return self._elementwise_op(other, self, lambda x, y: x - y)
+
+    def __rmul__(self, other: "Field") -> "Field":
+        return self._elementwise_op(other, self, lambda x, y: x * y)
+
+    def __rtruediv__(self, other: "Field") -> "Field":
+        return self._elementwise_op(other, self, lambda x, y: x / y)
 
     def __getitem__(self, slices: concepts.Index | concepts.Slice | tuple[concepts.Slice, ...]):
         if isinstance(slices, concepts.Index):
