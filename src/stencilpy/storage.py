@@ -1,6 +1,6 @@
 import dataclasses
 from collections.abc import Sequence
-from typing import Callable
+from typing import Callable, Any
 
 import numpy as np
 
@@ -44,13 +44,16 @@ class Field:
         self.sorted_dimensions = [dim for dim, _ in sorted_dimensions]
         self.data = np.moveaxis(data, range(data.ndim), [index for _, index in sorted_dimensions])
 
-    def _elementwise_op(self, other: "Field", op: Callable[[np.ndarray, np.ndarray], np.ndarray]) -> "Field":
-        bcast_dims = merge_dims(self.sorted_dimensions, other.sorted_dimensions)
-        self_new_shape = broadcast_shape(self.sorted_dimensions, bcast_dims, self.data.shape)
-        other_new_shape = broadcast_shape(other.sorted_dimensions, bcast_dims, other.data.shape)
-        self_reshaped = np.reshape(self.data, self_new_shape)
-        other_reshaped = np.reshape(other.data, other_new_shape)
-        return Field(bcast_dims, op(self_reshaped, other_reshaped))
+    def _elementwise_op(self, other: Any, op: Callable[[np.ndarray, np.ndarray], np.ndarray]) -> "Field":
+        if isinstance(other, Field):
+            bcast_dims = merge_dims(self.sorted_dimensions, other.sorted_dimensions)
+            self_new_shape = broadcast_shape(self.sorted_dimensions, bcast_dims, self.data.shape)
+            other_new_shape = broadcast_shape(other.sorted_dimensions, bcast_dims, other.data.shape)
+            self_reshaped = np.reshape(self.data, self_new_shape)
+            other_reshaped = np.reshape(other.data, other_new_shape)
+            return Field(bcast_dims, op(self_reshaped, other_reshaped))
+        else:
+            return Field(self.sorted_dimensions, op(self.data, other))
 
     def __add__(self, other: "Field") -> "Field":
         return self._elementwise_op(other, lambda x, y: x + y)

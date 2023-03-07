@@ -567,6 +567,8 @@ class HlastToSirPass(NodeTransformer):
         ndindex_type = ts.NDIndexType(type_.dims)
         samples = [
             hlast.Sample(loc, arg_ref.type_.element_type, arg_ref, hlast.Index(loc, ndindex_type))
+            if isinstance(arg_ref.type_, ts.FieldType)
+            else arg_ref
             for arg_ref in arg_refs
         ]
         body = [hlast.Return(loc, type_.results[0], [node.element_expr(samples)])]
