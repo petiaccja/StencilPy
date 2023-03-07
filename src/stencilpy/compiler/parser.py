@@ -145,7 +145,7 @@ class PythonToHlast(ast.NodeTransformer):
         loc = self.get_ast_loc(node)
         builtin = self._visit_call_builtin(node)
         if builtin: return builtin
-        apply = self._visit_apply(node)
+        apply = self._visit_call_apply(node)
         if apply: return apply
         raise CompilationError(loc, "object not callable")
 
@@ -172,14 +172,27 @@ class PythonToHlast(ast.NodeTransformer):
     def visit_Subscript(self, node: ast.Subscript) -> Any:
         loc = self.get_ast_loc(node)
         value = self.visit(node.value)
-        slice = self.visit(node.slice)
-        if isinstance(value.type_, ts.FieldType) and isinstance(slice.type_, ts.NDIndexType):
-            return hlast.Sample(loc, value.type_.element_type, value, slice)
-        raise CompilationError(
-            loc,
-            f"object of type {value.type_} cannot be subscripted"
-            f" with object of type {slice.type_}"
-        )
+
+        if isinstance(value, concepts.Dimension):
+            slice_expr = self.visit(node.slice)
+            if isinstance(slice_expr, hlast.Expr):
+                return hlast.Size(value, slice_expr)
+            elif isinstance(slice_expr, hlast.Slice):
+                return hlast.Slice(value, slice_expr.lower, slice_expr.upper, slice_expr.step)
+            raise CompilationError(loc, f"dimension cannot be subscripted by object of type `{slice_expr.type_}`")
+        elif isinstance(value.type_, ts.FieldType):
+            slice_exprs: Sequence[hlast.Expr] = self._visit_getitem_expr(node.slice)
+            if all(isinstance(expr, (hlast.Slice, hlast.Size)) for expr in slice_exprs):
+                slices: list[hlast.Slice] = [
+                    self._promote_to_slice(expr) if isinstance(expr, hlast.Size) else expr
+                    for expr in slice_exprs
+                ]
+                return hlast.ExtractSlice(loc, value.type_, value, slices)
+            elif isinstance(slice_exprs[0].type_, ts.NDIndexType):
+                return hlast.Sample(loc, value.type_.element_type, value, slice_exprs[0])
+            expr_types = [str(expr.type_) if hasattr(expr, "type_") else str(type(expr)) for expr in slice_exprs]
+            str_types = ", ".join(expr_types)
+            raise CompilationError(loc, f"field cannot be subscripted by object of type `({str_types})`")
 
     def visit_BinOp(self, node: ast.BinOp) -> hlast.Expr:
         loc = self.get_ast_loc(node)
@@ -251,6 +264,16 @@ class PythonToHlast(ast.NodeTransformer):
         else:
             return builder(operands)
 
+    def visit_Slice(self, node: ast.Slice) -> hlast.Slice:
+        loc = self.get_ast_loc(node)
+        global invalid_dim
+        if not "invalid_dim" in globals():
+            invalid_dim = concepts.Dimension("INVALID_DIM")
+        lower = self.visit(node.lower) if node.lower else hlast.Constant(loc, ts.IndexType(), 0)
+        upper = self.visit(node.upper) if node.upper else None
+        step = self.visit(node.step) if node.step else hlast.Constant(loc, ts.IndexType(), 1)
+        return hlast.Slice(invalid_dim, lower, upper, step)
+
     def visit_Expr(self, node: ast.Expr) -> Any:
         return self.visit(node.value)
 
@@ -287,30 +310,25 @@ class PythonToHlast(ast.NodeTransformer):
                 raise InternalCompilerError(loc, f"builtin function `{callee.value.name}` is not implemented")
         return _BUILTIN_MAPPING[callee.value.name](self, loc, node.args)
 
-    def _visit_apply(self, node: ast.Call) -> Optional[hlast.Apply]:
+    def _visit_call_apply(self, node: ast.Call) -> Optional[hlast.Apply]:
         loc = self.get_ast_loc(node)
         node_shape = node.func
         if not isinstance(node_shape, ast.Subscript):
             return None
-        node_dims = node_shape.value
-        if not isinstance(node_dims, ast.Subscript):
-            return None
-        node_stencil = node_dims.value
+        node_stencil = node_shape.value
         if not isinstance(node_stencil, ast.Name):
             return None
-        sizes = self._visit_slice(node_shape.slice)
-        dims = self._visit_slice(node_dims.slice)
-        if len(dims) != len(sizes):
-            raise CompilationError(loc, "number of dimensions and number of sizes must match in stencil invocation")
-        shape = {dim: size for dim, size in zip(dims, sizes)}
+        sizes: Sequence[hlast.Size] = self._visit_getitem_expr(node_shape.slice)
+        shape = {sz.dimension: sz.size for sz in sizes}
+        dims = sorted(sz.dimension for sz in sizes)
         args = [self.visit(arg) for arg in node.args]
-        stencil = self._instantiate(node_stencil, [arg.type_ for arg in args], sorted(dims))
+        stencil = self._instantiate(node_stencil, [arg.type_ for arg in args], dims)
         assert isinstance(stencil.type_, ts.StencilType)
         assert len(stencil.type_.results) == 1
         type_ = ts.FieldType(stencil.type_.results[0], stencil.type_.dims)
         return hlast.Apply(loc, type_, stencil, shape, args)
 
-    def _visit_slice(self, node: ast.AST):
+    def _visit_getitem_expr(self, node: ast.AST):
         if isinstance(node, ast.Tuple):
             return [self.visit(element) for element in node.elts]
         return [self.visit(node)]
@@ -363,6 +381,14 @@ class PythonToHlast(ast.NodeTransformer):
             return node.value
         else:
             raise CompilationError(location, f"external symbol of type `{type(node.value)}` is not understood")
+
+    def _promote_to_slice(self, size: hlast.Size) -> hlast.Slice:
+        loc = concepts.Location.unknown()
+        c_1 = hlast.Constant(loc, size.size.type_, 1);
+        lower = size.size
+        upper = hlast.ArithmeticOperation(loc, lower.type_, size.size, c_1, hlast.ArithmeticFunction.ADD)
+        step = c_1
+        return hlast.Slice(size.dimension, lower, upper, step)
 
 
 def get_source_code(definition: Callable):

@@ -1,6 +1,6 @@
 import dataclasses
 from stencilpy.compiler import types as ts
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 from stencilpy.concepts import Location, Dimension
 import enum
 
@@ -45,6 +45,20 @@ class Expr(Node):
 
 
 @dataclasses.dataclass
+class Slice:
+    dimension: Dimension
+    lower: Expr
+    upper: Optional[Expr]
+    step: Expr
+
+
+@dataclasses.dataclass
+class Size:
+    dimension: Dimension
+    size: Expr
+
+
+@dataclasses.dataclass
 class Statement(Node):
     ...
 
@@ -74,6 +88,12 @@ class Stencil(Node):
 @dataclasses.dataclass
 class Return(Statement):
     values: list[Expr]
+
+
+@dataclasses.dataclass
+class Call(Expr):
+    name: str
+    args: list[Expr]
 
 
 @dataclasses.dataclass
@@ -141,6 +161,31 @@ class If(Expr):
 @dataclasses.dataclass
 class Yield(Statement):
     values: list[Expr]
+
+
+@dataclasses.dataclass
+class ExtractSlice(Expr):
+    source: Expr
+    slices: list[Slice]
+
+
+@dataclasses.dataclass
+class InsertSlice(Expr):
+    source: Expr
+    target: Expr
+    slices: list[Slice]
+
+
+@dataclasses.dataclass
+class AllocEmpty(Expr):
+    element_type: ts.Type
+    shape: list[Size]
+
+
+@dataclasses.dataclass
+class Cast(Expr):
+    value: Expr
+    type: ts.Type
 
 
 @dataclasses.dataclass

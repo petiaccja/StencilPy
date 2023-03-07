@@ -64,21 +64,22 @@ class Field:
     def __truediv__(self, other: "Field") -> "Field":
         return self._elementwise_op(other, lambda x, y: x / y)
 
-    def __getitem__(self, dimensions: concepts.Index | tuple[concepts.Dimension, ...]):
-        if isinstance(dimensions, concepts.Index):
-            raw_idx = tuple(dimensions.values[dim] for dim in self.sorted_dimensions)
+    def __getitem__(self, slices: concepts.Index | concepts.Slice | tuple[concepts.Slice, ...]):
+        if isinstance(slices, concepts.Index):
+            raw_idx = tuple(slices.values[dim] for dim in self.sorted_dimensions)
             return self.data[raw_idx]
-
-        @dataclasses.dataclass
-        class Slicer:
-            field: Field
-            dimensions: tuple[concepts.Dimension]
-            def __getitem__(self, slices: tuple[int, ...] | tuple[slice, ...]):
-                mapping = {dim: slc for dim, slc in zip(dimensions, slices)}
-                slices = tuple(mapping[dim] for dim in self.field.sorted_dimensions)
-                new_data = self.field.data[slices]
-                return Field(self.field.sorted_dimensions, new_data)
-        return Slicer(self, dimensions)
+        elif isinstance(slices, concepts.Slice):
+            return self.__getitem__((slices,))
+        elif isinstance(slices, tuple):
+            mapping = {slc.dimension: slc.slice for slc in slices}
+            raw_slices = tuple(mapping[dim] for dim in self.sorted_dimensions)
+            raw_shape = tuple(
+                len(range(*slc.indices(shp))) if isinstance(slc, slice) else 1
+                for slc, shp in zip(raw_slices, self.data.shape)
+            )
+            new_data = np.reshape(self.data[raw_slices], raw_shape)
+            return Field(self.sorted_dimensions, new_data)
+        raise TypeError(f"cannot subscript field with object of type {type(slices)}")
 
     def __matmul__(self, mapping: tuple[Connectivity, "Field"]):
         conn = mapping[0]

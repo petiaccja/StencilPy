@@ -90,7 +90,13 @@ class ShapeFunctionPass(NodeTransformer):
     def visit_Module(self, node: hlast.Module) -> hlast.Module:
         shape_funcs = [self.visit(func) for func in node.functions]
 
-        funcs = [*shape_funcs, *node.functions]  # Shape function are added to original functions
+        funcs = [
+            self._normalize_lower(),  # Helper functions
+            self._normalize_upper(),
+            self._slice_size(),
+            *shape_funcs,  # Shape functions added
+            *node.functions  # Original functions kept without change
+        ]
         stencils = node.stencils  # Stencils are unchanged
         return hlast.Module(node.location, node.type_, funcs, stencils)
 
@@ -183,7 +189,7 @@ class ShapeFunctionPass(NodeTransformer):
         }
         return shape
 
-    def visit_If(self, node: hlast.If):
+    def visit_If(self, node: hlast.If) -> hlast.If:
         loc = node.location
         type_ = node.type_
 
@@ -201,6 +207,126 @@ class ShapeFunctionPass(NodeTransformer):
         values = [self.visit(value) for value in node.values]
         return hlast.Yield(loc, type_, values)
 
+    def visit_ExtractSlice(self, node: hlast.ExtractSlice) -> dict[concepts.Dimension, hlast.Expr]:
+        loc = node.location
+        source_shape: dict[concepts.Dimension, hlast.Expr] = self.visit(node.source)
+        slices = {slc.dimension: self._visit_slice(slc) for slc in node.slices}
+        index_t = ts.IndexType()
+        def as_index(expr: hlast.Expr):
+            return hlast.Cast(loc, index_t, expr, index_t)
+        shape = {
+            dim: hlast.Call(
+                loc,
+                size.type_,
+                "__slice_size",
+                [
+                    as_index(slices[dim].lower),
+                    as_index(slices[dim].upper) if slices[dim].upper else as_index(size),
+                    as_index(slices[dim].step),
+                    as_index(size)]
+            )
+            for dim, size in source_shape.items()
+        }
+        return shape
+
+    def visit_Cast(self, node: hlast.Cast) -> hlast.Cast:
+        value = self.visit(node.value)
+        return hlast.Cast(node.location, node.type_, value, node.type_)
+
+    def _visit_slice(self, slc: hlast.Slice):
+        return hlast.Slice(
+            slc.dimension,
+            self.visit(slc.lower),
+            self.visit(slc.upper) if slc.upper else None,
+            self.visit(slc.step)
+        )
+
+    def _normalize_lower(self) -> hlast.Function:
+        index_type = ts.IndexType()
+        bool_type = ts.IntegerType(1, True)
+
+        loc = concepts.Location.unknown()
+        name = "__normalize_lower"
+        parameters = [
+            hlast.Parameter("lower", index_type),
+            hlast.Parameter("size", index_type),
+        ]
+        results = [index_type]
+        type_ = ts.FunctionType([p.type_ for p in parameters], results)
+
+        lower = hlast.SymbolRef(loc, index_type, "lower")
+        size = hlast.SymbolRef(loc, index_type, "size")
+        c_0 = hlast.Constant(loc, ts.IndexType(), 0)
+        c_1 = hlast.Constant(loc, ts.IndexType(), 1)
+        is_negative = hlast.ComparisonOperation(loc, bool_type, lower, c_0, hlast.ComparisonFunction.LT)
+        correction = hlast.If(
+            loc,
+            index_type,
+            is_negative,
+            [hlast.Yield(loc, ts.VoidType(), [c_1])],
+            [hlast.Yield(loc, ts.VoidType(), [c_0])],
+        )
+        count = hlast.ArithmeticOperation(loc, index_type, lower, size, hlast.ArithmeticFunction.DIV)
+        corr_count = hlast.ArithmeticOperation(loc, index_type, count, correction, hlast.ArithmeticFunction.SUB)
+        prod = hlast.ArithmeticOperation(loc, index_type, corr_count, size, hlast.ArithmeticFunction.MUL)
+        rem = hlast.ArithmeticOperation(loc, index_type, lower, prod, hlast.ArithmeticFunction.SUB)
+        body = [hlast.Return(loc, ts.VoidType(), [rem])]
+        return hlast.Function(loc, type_, name, parameters, results, body)
+
+    def _normalize_upper(self) -> hlast.Function:
+        index_type = ts.IndexType()
+        bool_type = ts.IntegerType(1, True)
+
+        loc = concepts.Location.unknown()
+        name = "__normalize_upper"
+        parameters = [
+            hlast.Parameter("upper", index_type),
+            hlast.Parameter("size", index_type),
+        ]
+        results = [index_type]
+        type_ = ts.FunctionType([p.type_ for p in parameters], results)
+
+        upper = hlast.SymbolRef(loc, index_type, "upper")
+        size = hlast.SymbolRef(loc, index_type, "size")
+        c_0 = hlast.Constant(loc, index_type, 0)
+        rem_expr = hlast.Call(loc, index_type, "__normalize_lower", [upper, size])
+        rem_assign = hlast.Assign(loc, ts.VoidType(), ["rem"], [rem_expr])
+        rem_ref = hlast.SymbolRef(loc, index_type, "rem")
+        is_zero = hlast.ComparisonOperation(loc, bool_type, rem_ref, c_0, hlast.ComparisonFunction.EQ)
+        rem_corr = hlast.If(
+            loc,
+            index_type,
+            is_zero,
+            [hlast.Yield(loc, ts.VoidType(), [size])],
+            [hlast.Yield(loc, ts.VoidType(), [rem_ref])],
+        )
+        body = [rem_assign, hlast.Return(loc, ts.VoidType(), [rem_corr])]
+        return hlast.Function(loc, type_, name, parameters, results, body)
+
+    def _slice_size(self) -> hlast.Function:
+        index_type = ts.IndexType()
+
+        loc = concepts.Location.unknown()
+        name = "__slice_size"
+        parameters = [
+            hlast.Parameter("lower", index_type),
+            hlast.Parameter("upper", index_type),
+            hlast.Parameter("step", index_type),
+            hlast.Parameter("size", index_type),
+        ]
+        results = [index_type]
+        type_ = ts.FunctionType([p.type_ for p in parameters], results)
+
+        lower = hlast.SymbolRef(loc, index_type, "lower")
+        upper = hlast.SymbolRef(loc, index_type, "upper")
+        step = hlast.SymbolRef(loc, index_type, "step")
+        size = hlast.SymbolRef(loc, index_type, "size")
+        norm_lower = hlast.Call(loc, index_type, "__normalize_lower", [lower, size])
+        norm_upper = hlast.Call(loc, index_type, "__normalize_upper", [upper, size])
+        diff = hlast.ArithmeticOperation(loc, index_type, norm_upper, norm_lower, hlast.ArithmeticFunction.SUB)
+        count = hlast.ArithmeticOperation(loc, index_type, diff, step, hlast.ArithmeticFunction.DIV)
+        body = [hlast.Return(loc, ts.VoidType(), [count])]
+        return hlast.Function(loc, type_, name, parameters, results, body)
 
 
 class HlastToSirPass(NodeTransformer):
@@ -327,6 +453,12 @@ class HlastToSirPass(NodeTransformer):
                 f"cannot sample field of type {node.field.type_} with index of type {node.index.type_}"
             )
 
+    def visit_Call(self, node: hlast.Call) -> sir.Call:
+        loc = as_sir_loc(node.location)
+        name = node.name
+        args = [self.visit(arg) for arg in node.args]
+        return sir.Call(name, args, loc)
+
     def visit_Apply(self, node: hlast.Apply) -> sir.Apply:
         loc = as_sir_loc(node.location)
         callee = node.stencil.name
@@ -379,17 +511,51 @@ class HlastToSirPass(NodeTransformer):
         apply = sir.Apply(stencil.name, args, [output], [], [0]*len(shape), loc)
         return sir.Block([arg_assign, sir.Yield([apply], loc)], loc)
 
-    def visit_If(self, node: hlast.If):
+    def visit_If(self, node: hlast.If) -> sir.If:
         loc = as_sir_loc(node.location)
         cond = self.visit(node.cond)
         then_body = [self.visit(statement) for statement in node.then_body]
         else_body = [self.visit(statement) for statement in node.else_body]
         return sir.If(cond, then_body, else_body, loc)
 
-    def visit_Yield(self, node: hlast.Yield):
+    def visit_Yield(self, node: hlast.Yield) -> sir.Yield:
         loc = as_sir_loc(node.location)
         values = [self.visit(value) for value in node.values]
         return sir.Yield(values, loc)
+
+    def visit_ExtractSlice(self, node: hlast.ExtractSlice) -> sir.ExtractSlice:
+        assert isinstance(node.type_, ts.FieldType)
+        loc = as_sir_loc(node.location)
+        dimensions = node.type_.dimensions
+        lower_lookup = {slc.dimension: slc.lower for slc in node.slices}
+        upper_lookup = {slc.dimension: slc.upper for slc in node.slices}
+        step_lookup = {slc.dimension: slc.step for slc in node.slices}
+
+        source_expr = self.visit(node.source)
+        source_assign = sir.Assign(["__extract_slice_src"], [source_expr], loc)
+        source_ref = sir.SymbolRef("__extract_slice_src", loc)
+
+        index_type = sir.IndexType()
+        lowers = [sir.Cast(self.visit(lower_lookup[dim]), index_type, loc) for dim in dimensions]
+        uppers = [sir.Cast(self.visit(upper_lookup[dim]), index_type, loc) for dim in dimensions]
+        steps = [sir.Cast(self.visit(step_lookup[dim]), index_type, loc) for dim in dimensions]
+        shape = [sir.Dim(source_ref, sir.Constant.index(i, loc), loc) for i in range(len(dimensions))]
+
+        lowers_norm = [sir.Call("__normalize_lower", [lower, size], loc) for lower, size in zip(lowers, shape)]
+        sizes = [
+            sir.Call("__slice_size", [lower, upper, step, size], loc)
+            for lower, upper, step, size in zip(lowers, uppers, steps, shape)
+        ]
+
+        extract = sir.ExtractSlice(source_ref, lowers_norm, sizes, steps, loc)
+
+        return sir.Block([source_assign, sir.Yield([extract], loc)], loc)
+
+    def visit_Cast(self, node: hlast.Cast) -> sir.Cast:
+        loc = as_sir_loc(node.location)
+        value = self.visit(node.value)
+        type_ = as_sir_type(node.type_)
+        return sir.Cast(value, type_, loc)
 
     def _elementwise_stencil(self, node: hlast.ElementwiseOperation):
         assert isinstance(node.type_, ts.FieldType)

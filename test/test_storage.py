@@ -32,5 +32,5 @@ def test_field_slicing():
     data = np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
     inp = Field([IDim, JDim], data)
     expected = Field([IDim, JDim], data[1::, 0:2])
-    result = inp[JDim, IDim][0:2, 1::]
+    result = inp[JDim[0:2], IDim[1::]]
     assert np.all(result.data == expected.data)

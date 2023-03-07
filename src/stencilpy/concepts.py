@@ -37,6 +37,15 @@ class Dimension:
     def __str__(self):
         return f"'{self.id}"
 
+    def __getitem__(self, item: int | slice) -> "Slice":
+        return Slice(self, item)
+
+
+@dataclasses.dataclass
+class Slice:
+    dimension: Dimension
+    slice: int | slice
+
 
 @dataclasses.dataclass
 class Index:

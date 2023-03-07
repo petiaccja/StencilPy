@@ -26,7 +26,7 @@ def test_index(use_jit):
 
     @func
     def fn():
-        return sn[TDim][3]()
+        return sn[TDim[3]]()
 
     assert np.allclose(fn(jit=use_jit).data, 0.0)
 

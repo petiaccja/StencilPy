@@ -121,20 +121,13 @@ class JitFunction:
 class JitStencil:
     definition: Callable
 
-    def __getitem__(self, dimensions: concepts.Dimension | tuple[concepts.Dimension, ...]):
-        if not isinstance(dimensions, tuple):
-            dimensions = dimensions,
-        return JitStencil.Slicer(self.definition, dimensions)
+    def __getitem__(self, slices: concepts.Slice | tuple[concepts.Slice]):
+        if not isinstance(slices, tuple):
+            slices = slices,
+        dimensions = tuple(slc.dimension for slc in slices)
+        sizes = tuple(slc.slice for slc in slices)
+        return JitStencil.Executor(self.definition, dimensions, sizes)
 
-    @dataclasses.dataclass
-    class Slicer:
-        definition: Callable
-        dimensions: tuple[concepts.Dimension, ...]
-
-        def __getitem__(self, sizes: int | tuple[int, ...]):
-            if not isinstance(sizes, tuple):
-                sizes = sizes,
-            return JitStencil.Executor(self.definition, self.dimensions, sizes)
 
     @dataclasses.dataclass
     class Executor:

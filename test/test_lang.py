@@ -34,7 +34,7 @@ def test_apply(use_jit):
 
     @func
     def fn(v: int, w: int, h: int):
-        return sn[TDim, UDim][w, h](v)
+        return sn[TDim[w], UDim[h]](v)
 
     r = fn(1, 4, 3, jit=use_jit)
 
@@ -59,7 +59,7 @@ def test_sample(use_jit):
 
     @func
     def fn(a: Field, st: int, su: int) -> Field:
-        return sn[UDim, TDim][su, st](a)
+        return sn[UDim[su], TDim[st]](a)
 
     a = Field([TDim, UDim], np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float32))
     r = fn(a, 2, 3, jit=use_jit)
@@ -107,3 +107,16 @@ def test_comparison_scalar(use_jit):
     assert r
     r = fn(2, 3, 1, jit=use_jit)
     assert not r  # It is None when it should in fact be False
+
+
+def test_extract_slice(use_jit):
+    @func
+    def fn(a: Field) -> Field:
+        return a[UDim[0:2], TDim[1]]
+
+    data = np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
+    a = Field([TDim, UDim], data)
+    r = fn(a, jit=use_jit)
+    expected = data[1, 0:2]
+
+    assert np.all(r.data == expected)
