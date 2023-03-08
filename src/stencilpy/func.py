@@ -104,7 +104,8 @@ class JitFunction:
         hast_module = self.parse(arg_types, kwarg_types)
         signature = _get_signature(hast_module, func_name)
         sir_module = lowering.lower(hast_module)
-        options = sir.CompileOptions(sir.TargetArch.X86, sir.OptimizationLevel.O3)
+        opt = sir.OptimizationOptions(True, True, True, True)
+        options = sir.CompileOptions(sir.TargetArch.X86, sir.OptimizationLevel.O3, opt)
         compiled_module: sir.CompiledModule = sir.compile(sir_module, options, True)
         ir = compiled_module.get_ir()
         translated_args = [_translate_arg(arg) for arg in args]

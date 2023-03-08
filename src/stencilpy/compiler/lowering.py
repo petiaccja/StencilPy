@@ -371,7 +371,7 @@ class HlastToSirPass(NodeTransformer):
         results = [as_sir_type(type_) for type_ in node.results]
         statements = [self.visit(statement) for statement in node.body]
         ndims = len(node.dims)
-        return sir.Stencil(name, [*parameters, *out_parameters], results, statements, ndims, True, loc)
+        return sir.Stencil(name, [*parameters, *out_parameters], results, statements, ndims, False, loc)
 
     def visit_Return(self, node: hlast.Return) -> sir.Return:
         loc = as_sir_loc(node.location)
@@ -488,9 +488,9 @@ class HlastToSirPass(NodeTransformer):
 
     def visit_ElementwiseOperation(self, node: hlast.ElementwiseOperation):
         loc = as_sir_loc(node.location)
-        args = [self.visit(arg) for arg in node.args]
-        names = [f"__elemwise_arg{i}" for i in range(len(args))]
-        arg_assign = sir.Assign(names, args, loc)
+        arg_exprs = [self.visit(arg) for arg in node.args]
+        names = [f"__elemwise_arg{i}" for i in range(len(arg_exprs))]
+        arg_assign = sir.Assign(names, arg_exprs, loc)
         arg_refs = [sir.SymbolRef(name, loc) for name in names]
         assert isinstance(node.type_, ts.FieldType)
 

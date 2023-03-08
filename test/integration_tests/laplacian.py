@@ -29,7 +29,7 @@ def np_laplacian(u: np.ndarray) -> np.ndarray:
 
 
 def test_laplacian(use_jit):
-    u = Field([XDim, YDim], np.random.random(size=(7, 8)).astype(np.float32))
+    u = Field([XDim, YDim], np.random.random(size=(7, 8)).astype(np.float64))
     
     r = laplacian(u, jit=use_jit)
     e = np_laplacian(u.data)
