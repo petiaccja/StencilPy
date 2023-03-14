@@ -127,3 +127,16 @@ def as_numpy_type(type_: Type) -> np_typing.DTypeLike:
     raise ValueError(f"cannot convert type {type_} to numpy dtype-like")
 
 
+void_t = VoidType()
+index_t = IndexType()
+bool_t = IntegerType(1, True)
+int8_t = IntegerType(8, True)
+int16_t = IntegerType(16, True)
+int32_t = IntegerType(32, True)
+int64_t = IntegerType(64, True)
+uint8_t = IntegerType(8, False)
+uint16_t = IntegerType(16, False)
+uint32_t = IntegerType(32, False)
+uint64_t = IntegerType(64, False)
+float32_t = FloatType(32)
+float64_t = FloatType(64)

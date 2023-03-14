@@ -28,7 +28,7 @@ class Dimension:
     name: Optional[str] = dataclasses.field(default=None, hash=False)
 
     def __init__(self, name: Optional[str] = None):
-        self.id = next(utility.unique_id)
+        self.id = utility.unique_id()
         self.name = name
 
     def __lt__(self, other):

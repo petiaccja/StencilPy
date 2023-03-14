@@ -1,3 +1,4 @@
+import ctypes
 import textwrap
 
 from stencilpy.compiler import types as ts
@@ -293,9 +294,11 @@ class PythonToHlast(ast.NodeTransformer):
         global invalid_dim
         if not "invalid_dim" in globals():
             invalid_dim = concepts.Dimension("INVALID_DIM")
-        lower = self.visit(node.lower) if node.lower else hlast.Constant(loc, ts.IndexType(), 0)
-        upper = self.visit(node.upper) if node.upper else None
-        step = self.visit(node.step) if node.step else hlast.Constant(loc, ts.IndexType(), 1)
+        index_max = 2**(8*ctypes.sizeof(ctypes.c_void_p) - 1) - 1
+        assert isinstance(index_max, int)
+        lower = self.visit(node.lower) if node.lower else hlast.Constant(loc, ts.index_t, 0)
+        upper = self.visit(node.upper) if node.upper else hlast.Constant(loc, ts.index_t, index_max)
+        step = self.visit(node.step) if node.step else hlast.Constant(loc, ts.index_t, 1)
         return hlast.Slice(invalid_dim, lower, upper, step)
 
     def visit_Expr(self, node: ast.Expr) -> Any:

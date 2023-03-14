@@ -8,6 +8,7 @@ from stencilpy.compiler import types as ts
 from stencilpy.error import *
 from stencilpy import concepts
 from collections.abc import Mapping
+from typing import Callable
 
 
 def as_sir_loc(loc: hlast.Location) -> sir.Location:
@@ -78,6 +79,176 @@ def elementwise_dims_to_arg(
     return dims_to_arg
 
 
+def slice_size(
+        loc: concepts.Location,
+        start: hlast.Expr,
+        stop: hlast.Expr,
+        step: hlast.Expr,
+) -> hlast.Expr:
+    return hlast.Call(loc, ts.VoidType(), "__slice_size", [start, stop, step])
+
+
+def slice_size_function() -> hlast.Function:
+    loc = concepts.Location("<__slice_size>", 1, 1)
+
+    name = "__slice_size"
+    parameters = [
+        hlast.Parameter("start", ts.index_t),
+        hlast.Parameter("stop", ts.index_t),
+        hlast.Parameter("step", ts.index_t),
+    ]
+    results = [ts.index_t]
+    type_ = ts.FunctionType([p.type_ for p in parameters], results)
+
+    start = hlast.SymbolRef(loc, ts.index_t, parameters[0].name)
+    stop = hlast.SymbolRef(loc, ts.index_t, parameters[1].name)
+    step = hlast.SymbolRef(loc, ts.index_t, parameters[2].name)
+
+    distance = hlast.ArithmeticOperation(loc, ts.index_t, stop, start, hlast.ArithmeticFunction.SUB)
+    size = hlast.ArithmeticOperation(loc, ts.index_t, distance, step, hlast.ArithmeticFunction.DIV)
+    clamped = hlast.Max(loc, ts.index_t, size, hlast.Constant(loc, ts.index_t, 0))
+
+    body = [hlast.Return(loc, ts.void_t, [clamped])]
+    return hlast.Function(loc, type_, name, parameters, results, body)
+
+
+def is_slice_adjustment_trivial(
+        start: hlast.Expr,
+        step: hlast.Expr,
+) -> bool:
+    is_start_trivial = isinstance(start, hlast.Constant) and start.value >= 0
+    is_step_trivial = isinstance(step, hlast.Constant) and step.value > 0
+    return is_start_trivial and is_step_trivial
+
+
+def adjust_slice_trivial_function() -> hlast.Function:
+    """
+    Simple method for limited cases to help optimization.
+    Use only when:
+    - start is a constant expression >= 0
+    - stop is an arbitrary expression
+    - step is a constant expression > 0
+    - length is an arbitrary expression (>=0)
+    """
+    loc = concepts.Location("<__adjust_slice_trivial>", 1, 1)
+
+    def lt(lhs, rhs):
+        return hlast.ComparisonOperation(loc, ts.bool_t, lhs, rhs, hlast.ComparisonFunction.LT)
+
+    def add(lhs, rhs):
+        return hlast.ArithmeticOperation(loc, ts.index_t, lhs, rhs, hlast.ArithmeticFunction.ADD)
+
+    def select(cond, lhs, rhs):
+        return hlast.If(loc, ts.index_t, cond, [hlast.Yield(loc, ts.void_t, [lhs])], [hlast.Yield(loc, ts.void_t, [rhs])])
+
+    name = "__adjust_slice_trivial"
+    parameters = [
+        hlast.Parameter("start", ts.index_t),
+        hlast.Parameter("stop", ts.index_t),
+        hlast.Parameter("step", ts.index_t),
+        hlast.Parameter("length", ts.index_t),
+    ]
+    results = [ts.index_t, ts.index_t]
+    type_ = ts.FunctionType([p.type_ for p in parameters], results)
+
+    start = hlast.SymbolRef(loc, ts.index_t, parameters[0].name)
+    stop = hlast.SymbolRef(loc, ts.index_t, parameters[1].name)
+    step = hlast.SymbolRef(loc, ts.index_t, parameters[2].name)
+    length = hlast.SymbolRef(loc, ts.index_t, parameters[3].name)
+
+    c0 = hlast.Constant(loc, ts.index_t, 0)
+
+    stop_adj = select(
+        lt(stop, c0),
+        hlast.Max(loc, ts.index_t, c0, add(stop, length)),
+        hlast.Min(loc, ts.index_t, stop, length)
+    )
+
+    body = [hlast.Return(loc, ts.void_t, [start, stop_adj])]
+    return hlast.Function(loc, type_, name, parameters, results, body)
+
+
+def adjust_slice_function() -> hlast.Function:
+    loc = concepts.Location("<__adjust_slice>", 1, 1)
+
+    def lt(lhs, rhs):
+        return hlast.ComparisonOperation(loc, ts.bool_t, lhs, rhs, hlast.ComparisonFunction.LT)
+
+    def gte(lhs, rhs):
+        return hlast.ComparisonOperation(loc, ts.bool_t, lhs, rhs, hlast.ComparisonFunction.GT)
+
+    def add(lhs, rhs):
+        return hlast.ArithmeticOperation(loc, ts.index_t, lhs, rhs, hlast.ArithmeticFunction.ADD)
+
+    def select(cond, lhs, rhs):
+        return hlast.If(loc, ts.index_t, cond, [hlast.Yield(loc, ts.void_t, [lhs])], [hlast.Yield(loc, ts.void_t, [rhs])])
+
+    name = "__adjust_slice"
+    parameters = [
+        hlast.Parameter("start", ts.index_t),
+        hlast.Parameter("stop", ts.index_t),
+        hlast.Parameter("step", ts.index_t),
+        hlast.Parameter("length", ts.index_t),
+    ]
+    results = [ts.index_t, ts.index_t]
+    type_ = ts.FunctionType([p.type_ for p in parameters], results)
+
+    c0 = hlast.Constant(loc, ts.index_t, 0)
+    cm1 = hlast.Constant(loc, ts.index_t, -1)
+
+    start = hlast.SymbolRef(loc, ts.index_t, parameters[0].name)
+    stop = hlast.SymbolRef(loc, ts.index_t, parameters[1].name)
+    step = hlast.SymbolRef(loc, ts.index_t, parameters[2].name)
+    length = hlast.SymbolRef(loc, ts.index_t, parameters[3].name)
+
+    start_adj = select(
+        lt(start, c0),
+        select(
+            lt(add(start, length), c0),
+            select(lt(step, c0), cm1, c0),
+            add(start, length)
+        ),
+        select(
+            gte(start, length),
+            select(lt(step, c0), add(length, cm1), length),
+            start
+        )
+    )
+
+    stop_adj = select(
+        lt(stop, c0),
+        select(
+            lt(add(stop, length), c0),
+            select(lt(step, c0), cm1, c0),
+            add(stop, length)
+        ),
+        select(
+            gte(stop, length),
+            select(lt(step, c0), add(length, cm1), length),
+            length
+        )
+    )
+
+    body = [hlast.Return(loc, ts.void_t, [start_adj, stop_adj])]
+    return hlast.Function(loc, type_, name, parameters, results, body)
+
+
+def make_block_hlast(loc: concepts.Location, make_expr: Callable, *args) -> hlast.Expr:
+    names = [f"__block_arg{utility.unique_id()}" for _ in range(len(args))]
+    assign = hlast.Assign(loc, ts.void_t, names, list(args))
+    refs = [hlast.SymbolRef(loc, arg.type_, name) for name, arg in zip(names, args)]
+    statements = make_expr(*refs)
+    return hlast.Block(loc, ts.void_t, [assign, *statements])
+
+
+def make_block_sir(loc: sir.Location, make_expr: Callable, *args) -> sir.Expression:
+    names = [f"__block_arg{utility.unique_id()}" for _ in range(len(args))]
+    assign = sir.Assign(names, args, loc)
+    refs = [sir.SymbolRef(name, loc) for name, arg in zip(names, args)]
+    statements = make_expr(*refs)
+    return sir.Block([assign, *statements], loc)
+
+
 class ShapeFunctionPass(NodeTransformer):
     @staticmethod
     def shape_var(name: str, dim: concepts.Dimension):
@@ -91,9 +262,9 @@ class ShapeFunctionPass(NodeTransformer):
         shape_funcs = [self.visit(func) for func in node.functions]
 
         funcs = [
-            self._normalize_lower(),  # Helper functions
-            self._normalize_upper(),
-            self._slice_size(),
+            slice_size_function(),
+            adjust_slice_function(),
+            adjust_slice_trivial_function(),
             *shape_funcs,  # Shape functions added
             *node.functions  # Original functions kept without change
         ]
@@ -211,19 +382,28 @@ class ShapeFunctionPass(NodeTransformer):
         loc = node.location
         source_shape: dict[concepts.Dimension, hlast.Expr] = self.visit(node.source)
         slices = {slc.dimension: self._visit_slice(slc) for slc in node.slices}
-        index_t = ts.IndexType()
+
         def as_index(expr: hlast.Expr):
-            return hlast.Cast(loc, index_t, expr, index_t)
+            return hlast.Cast(loc, ts.index_t, expr, ts.index_t)
+
+        def make_expr(start: hlast.Expr, stop: hlast.Expr, step: hlast.Expr, length: hlast.Expr):
+            adj = hlast.Call(loc, ts.void_t, "__adjust_slice", [start, stop, step, length])
+            start_adj = hlast.SymbolRef(loc, ts.index_t, "__start_adj")
+            stop_adj = hlast.SymbolRef(loc, ts.index_t, "__stop_adj")
+            size = slice_size(loc, start_adj, stop_adj, step)
+            return [
+                hlast.Assign(loc, ts.void_t, [start_adj.name, stop_adj.name], [adj]),
+                hlast.Yield(loc, ts.void_t, [size])
+            ]
+
         shape = {
-            dim: hlast.Call(
-                loc,
-                size.type_,
-                "__slice_size",
-                [
+            dim: make_block_hlast(
+                    loc,
+                    make_expr,
                     as_index(slices[dim].lower),
-                    as_index(slices[dim].upper) if slices[dim].upper else as_index(size),
+                    as_index(slices[dim].upper),
                     as_index(slices[dim].step),
-                    as_index(size)]
+                    as_index(size)
             )
             for dim, size in source_shape.items()
         }
@@ -240,93 +420,6 @@ class ShapeFunctionPass(NodeTransformer):
             self.visit(slc.upper) if slc.upper else None,
             self.visit(slc.step)
         )
-
-    def _normalize_lower(self) -> hlast.Function:
-        index_type = ts.IndexType()
-        bool_type = ts.IntegerType(1, True)
-
-        loc = concepts.Location.unknown()
-        name = "__normalize_lower"
-        parameters = [
-            hlast.Parameter("lower", index_type),
-            hlast.Parameter("size", index_type),
-        ]
-        results = [index_type]
-        type_ = ts.FunctionType([p.type_ for p in parameters], results)
-
-        lower = hlast.SymbolRef(loc, index_type, "lower")
-        size = hlast.SymbolRef(loc, index_type, "size")
-        c_0 = hlast.Constant(loc, ts.IndexType(), 0)
-        c_1 = hlast.Constant(loc, ts.IndexType(), 1)
-        is_negative = hlast.ComparisonOperation(loc, bool_type, lower, c_0, hlast.ComparisonFunction.LT)
-        correction = hlast.If(
-            loc,
-            index_type,
-            is_negative,
-            [hlast.Yield(loc, ts.VoidType(), [c_1])],
-            [hlast.Yield(loc, ts.VoidType(), [c_0])],
-        )
-        count = hlast.ArithmeticOperation(loc, index_type, lower, size, hlast.ArithmeticFunction.DIV)
-        corr_count = hlast.ArithmeticOperation(loc, index_type, count, correction, hlast.ArithmeticFunction.SUB)
-        prod = hlast.ArithmeticOperation(loc, index_type, corr_count, size, hlast.ArithmeticFunction.MUL)
-        rem = hlast.ArithmeticOperation(loc, index_type, lower, prod, hlast.ArithmeticFunction.SUB)
-        body = [hlast.Return(loc, ts.VoidType(), [rem])]
-        return hlast.Function(loc, type_, name, parameters, results, body)
-
-    def _normalize_upper(self) -> hlast.Function:
-        index_type = ts.IndexType()
-        bool_type = ts.IntegerType(1, True)
-
-        loc = concepts.Location.unknown()
-        name = "__normalize_upper"
-        parameters = [
-            hlast.Parameter("upper", index_type),
-            hlast.Parameter("size", index_type),
-        ]
-        results = [index_type]
-        type_ = ts.FunctionType([p.type_ for p in parameters], results)
-
-        upper = hlast.SymbolRef(loc, index_type, "upper")
-        size = hlast.SymbolRef(loc, index_type, "size")
-        c_0 = hlast.Constant(loc, index_type, 0)
-        rem_expr = hlast.Call(loc, index_type, "__normalize_lower", [upper, size])
-        rem_assign = hlast.Assign(loc, ts.VoidType(), ["rem"], [rem_expr])
-        rem_ref = hlast.SymbolRef(loc, index_type, "rem")
-        is_zero = hlast.ComparisonOperation(loc, bool_type, rem_ref, c_0, hlast.ComparisonFunction.EQ)
-        rem_corr = hlast.If(
-            loc,
-            index_type,
-            is_zero,
-            [hlast.Yield(loc, ts.VoidType(), [size])],
-            [hlast.Yield(loc, ts.VoidType(), [rem_ref])],
-        )
-        body = [rem_assign, hlast.Return(loc, ts.VoidType(), [rem_corr])]
-        return hlast.Function(loc, type_, name, parameters, results, body)
-
-    def _slice_size(self) -> hlast.Function:
-        index_type = ts.IndexType()
-
-        loc = concepts.Location.unknown()
-        name = "__slice_size"
-        parameters = [
-            hlast.Parameter("lower", index_type),
-            hlast.Parameter("upper", index_type),
-            hlast.Parameter("step", index_type),
-            hlast.Parameter("size", index_type),
-        ]
-        results = [index_type]
-        type_ = ts.FunctionType([p.type_ for p in parameters], results)
-
-        lower = hlast.SymbolRef(loc, index_type, "lower")
-        upper = hlast.SymbolRef(loc, index_type, "upper")
-        step = hlast.SymbolRef(loc, index_type, "step")
-        size = hlast.SymbolRef(loc, index_type, "size")
-        norm_lower = hlast.Call(loc, index_type, "__normalize_lower", [lower, size])
-        norm_upper = hlast.Call(loc, index_type, "__normalize_upper", [upper, size])
-        diff = hlast.ArithmeticOperation(loc, index_type, norm_upper, norm_lower, hlast.ArithmeticFunction.SUB)
-        count = hlast.ArithmeticOperation(loc, index_type, diff, step, hlast.ArithmeticFunction.DIV)
-        body = [hlast.Return(loc, ts.VoidType(), [count])]
-        return hlast.Function(loc, type_, name, parameters, results, body)
 
 
 class HlastToSirPass(NodeTransformer):
@@ -375,28 +468,26 @@ class HlastToSirPass(NodeTransformer):
 
     def visit_Return(self, node: hlast.Return) -> sir.Return:
         loc = as_sir_loc(node.location)
-        values = []
-        for idx, value in enumerate(node.values):
-            if isinstance(value.type_, ts.FieldType):
-                ndims = len(value.type_.dimensions)
 
-                source = self.visit(value)
-                source_assign = sir.Assign([f"__value_{idx}"], [source], loc)
-                source_ref = sir.SymbolRef(f"__value_{idx}", loc)
+        def make_expr(*values):
+            values_out = []
+            for index, (value, value_in) in enumerate(zip(values, node.values)):
+                if isinstance(value_in.type_, ts.FieldType):
+                    ndims = len(value_in.type_.dimensions)
 
-                dest = sir.SymbolRef(self._out_param_name(idx), loc)
-                offsets = [sir.Constant.index(0, loc) for _ in range(ndims)]
-                sizes = [sir.Dim(source_ref, sir.Constant.index(i, loc), loc) for i in range(ndims)]
-                strides = [sir.Constant.index(1, loc) for _ in range(ndims)]
-                insert = sir.InsertSlice(source_ref, dest, offsets, sizes, strides, loc)
-                block_yield = sir.Yield([insert], loc)
+                    dest = sir.SymbolRef(self._out_param_name(index), loc)
+                    offsets = [sir.Constant.index(0, loc) for _ in range(ndims)]
+                    sizes = [sir.Dim(value, sir.Constant.index(i, loc), loc) for i in range(ndims)]
+                    strides = [sir.Constant.index(1, loc) for _ in range(ndims)]
 
-                block = sir.Block([source_assign, block_yield], loc)
-                values.append(block)
-            else:
-                values.append(self.visit(value))
+                    insert = sir.InsertSlice(value, dest, offsets, sizes, strides, loc)
+                    values_out.append(insert)
+                else:
+                    values_out.append(value)
+            return [sir.Yield(values_out, loc)]
 
-        return sir.Return(values, loc)
+        values = [self.visit(value) for value in node.values]
+        return sir.Return([make_block_sir(loc, make_expr, *values)], loc)
 
     def visit_Constant(self, node: hlast.Constant) -> sir.Constant:
         loc = as_sir_loc(node.location)
@@ -488,28 +579,28 @@ class HlastToSirPass(NodeTransformer):
 
     def visit_ElementwiseOperation(self, node: hlast.ElementwiseOperation):
         loc = as_sir_loc(node.location)
-        arg_exprs = [self.visit(arg) for arg in node.args]
-        names = [f"__elemwise_arg{i}" for i in range(len(arg_exprs))]
-        arg_assign = sir.Assign(names, arg_exprs, loc)
-        arg_refs = [sir.SymbolRef(name, loc) for name in names]
-        assert isinstance(node.type_, ts.FieldType)
 
-        dims_to_arg = elementwise_dims_to_arg(node.type_.dimensions, [arg.type_ for arg in node.args])
-        shape = [
-            sir.Dim(
-                arg_refs[arg_idx],
-                sir.Constant.index(get_dim_index(node.args[arg_idx].type_.dimensions, dim), loc),
-                loc
-            )
-            for dim, arg_idx in dims_to_arg.items()
-        ]
-
-        dtype = as_sir_type(node.type_.element_type)
-        output = sir.AllocTensor(dtype, shape, loc)
         stencil = self._elementwise_stencil(node)
         self.immediate_stencils.append(self.visit(stencil))
-        apply = sir.Apply(stencil.name, arg_refs, [output], [], [0]*len(shape), loc)
-        return sir.Block([arg_assign, sir.Yield([apply], loc)], loc)
+
+        def make_expr(*args):
+            assert isinstance(node.type_, ts.FieldType)
+            dims_to_arg = elementwise_dims_to_arg(node.type_.dimensions, [arg.type_ for arg in node.args])
+            shape = [
+                sir.Dim(
+                    args[arg_idx],
+                    sir.Constant.index(get_dim_index(node.args[arg_idx].type_.dimensions, dim), loc),
+                    loc
+                )
+                for dim, arg_idx in dims_to_arg.items()
+            ]
+            dtype = as_sir_type(node.type_.element_type)
+            output = sir.AllocTensor(dtype, shape, loc)
+            apply = sir.Apply(stencil.name, args, [output], [], [0]*len(shape), loc)
+            return [sir.Yield([apply], loc)]
+
+        args = [self.visit(arg) for arg in node.args]
+        return make_block_sir(loc, make_expr, *args)
 
     def visit_If(self, node: hlast.If) -> sir.If:
         loc = as_sir_loc(node.location)
@@ -527,31 +618,52 @@ class HlastToSirPass(NodeTransformer):
         assert isinstance(node.type_, ts.FieldType)
         loc = as_sir_loc(node.location)
         dimensions = node.type_.dimensions
-        lower_lookup = {slc.dimension: slc.lower for slc in node.slices}
-        upper_lookup = {slc.dimension: slc.upper for slc in node.slices}
+
+        starts_lookup = {slc.dimension: slc.lower for slc in node.slices}
+        stops_lookup = {slc.dimension: slc.upper for slc in node.slices}
         step_lookup = {slc.dimension: slc.step for slc in node.slices}
 
-        source_expr = self.visit(node.source)
-        source_assign = sir.Assign(["__extract_slice_src"], [source_expr], loc)
-        source_ref = sir.SymbolRef("__extract_slice_src", loc)
-
-        index_type = sir.IndexType()
         def as_index(expr: sir.Expression):
-            return sir.Cast(expr, index_type, loc)
-        shape = [sir.Dim(source_ref, sir.Constant.index(i, loc), loc) for i in range(len(dimensions))]
-        lowers = [as_index(self.visit(lower_lookup[dim])) for dim in dimensions]
-        uppers = [as_index(self.visit(upper_lookup[dim])) if upper_lookup[dim] else shape for dim, shape in zip(dimensions, shape)]
-        steps = [as_index(self.visit(step_lookup[dim])) for dim in dimensions]
+            return sir.Cast(expr, sir.IndexType(), loc)
 
-        lowers_norm = [sir.Call("__normalize_lower", [lower, size], loc) for lower, size in zip(lowers, shape)]
-        sizes = [
-            sir.Call("__slice_size", [lower, upper, step, size], loc)
-            for lower, upper, step, size in zip(lowers, uppers, steps, shape)
-        ]
+        source_in = self.visit(node.source)
+        starts_in = [as_index(self.visit(starts_lookup[dim])) for dim in dimensions]
+        stops_in = [as_index(self.visit(stops_lookup[dim])) for dim in dimensions]
+        steps_in = [as_index(self.visit(step_lookup[dim])) for dim in dimensions]
+        is_trivials = [is_slice_adjustment_trivial(starts_lookup[dim], step_lookup[dim]) for dim in dimensions]
+        adjust_funs = ["__adjust_slice_trivial" if is_trivial else "__adjust_slice" for is_trivial in is_trivials]
 
-        extract = sir.ExtractSlice(source_ref, lowers_norm, sizes, steps, loc)
+        ndim = len(starts_in)
 
-        return sir.Block([source_assign, sir.Yield([extract], loc)], loc)
+        def make_expr(*args):
+            source = args[0]
+            starts = args[1:ndim+1]
+            stops = args[ndim+1:2*ndim+1]
+            steps = args[2*ndim+1:3*ndim+1]
+            lengths = [sir.Dim(source, sir.Constant.index(i, loc), loc) for i in range(ndim)]
+            adjs = [
+                sir.Call(adjust_fun, [start, stop, step, length], loc)
+                for start, stop, step, length, adjust_fun in zip(starts, stops, steps, lengths, adjust_funs)
+            ]
+            offset_names = [f"__offset{i}" for i in range(ndim)]
+            stop_adj_names = [f"__stop_adj{i}" for i in range(ndim)]
+            assign_adjs = sir.Assign(
+                list(itertools.chain(*[(on, sn) for on, sn in zip(offset_names, stop_adj_names)])),
+                adjs,
+                loc
+            )
+            offsets = [sir.SymbolRef(on, loc) for on in offset_names]
+            stop_adjs = [sir.SymbolRef(on, loc) for on in stop_adj_names]
+            sizes = [
+                sir.Call("__slice_size", [offset, stop_adj, step], loc)
+                for offset, stop_adj, step in zip(offsets, stop_adjs, steps)
+            ]
+
+            extract = sir.ExtractSlice(source, offsets, sizes, steps, loc)
+            yieldst = sir.Yield([extract], loc)
+            return [assign_adjs, yieldst]
+
+        return make_block_sir(loc, make_expr, source_in, *starts_in, *stops_in, *steps_in)
 
     def visit_Cast(self, node: hlast.Cast) -> sir.Cast:
         loc = as_sir_loc(node.location)
@@ -559,10 +671,27 @@ class HlastToSirPass(NodeTransformer):
         type_ = as_sir_type(node.type_)
         return sir.Cast(value, type_, loc)
 
+    def visit_Block(self, node: hlast.Block) -> sir.Block:
+        loc = as_sir_loc(node.location)
+        body = [self.visit(statement) for statement in node.body]
+        return sir.Block(body, loc)
+
+    def visit_Min(self, node: hlast.Max) -> sir.Min:
+        loc = as_sir_loc(node.location)
+        lhs = self.visit(node.lhs)
+        rhs = self.visit(node.rhs)
+        return sir.Min(lhs, rhs, loc)
+
+    def visit_Max(self, node: hlast.Max) -> sir.Max:
+        loc = as_sir_loc(node.location)
+        lhs = self.visit(node.lhs)
+        rhs = self.visit(node.rhs)
+        return sir.Max(lhs, rhs, loc)
+
     def _elementwise_stencil(self, node: hlast.ElementwiseOperation):
         assert isinstance(node.type_, ts.FieldType)
         loc = node.location
-        name = f"__elemwise_sn_{next(utility.unique_id)}"
+        name = f"__elemwise_sn_{utility.unique_id()}"
         type_ = ts.StencilType([arg.type_ for arg in node.args], [node.type_.element_type], node.type_.dimensions)
         parameters = [hlast.Parameter(f"__arg{i}", p_type) for i, p_type in enumerate(type_.parameters)]
         arg_refs = [hlast.SymbolRef(loc, p_type, f"__arg{i}") for i, p_type in enumerate(type_.parameters)]

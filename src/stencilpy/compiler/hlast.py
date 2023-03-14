@@ -48,7 +48,7 @@ class Expr(Node):
 class Slice:
     dimension: Dimension
     lower: Expr
-    upper: Optional[Expr]
+    upper: Expr
     step: Expr
 
 
@@ -186,6 +186,23 @@ class AllocEmpty(Expr):
 class Cast(Expr):
     value: Expr
     type: ts.Type
+
+
+@dataclasses.dataclass
+class Min(Expr):
+    lhs: Expr
+    rhs: Expr
+
+
+@dataclasses.dataclass
+class Max(Expr):
+    lhs: Expr
+    rhs: Expr
+
+
+@dataclasses.dataclass
+class Block(Expr):
+    body: list[Statement]
 
 
 @dataclasses.dataclass
