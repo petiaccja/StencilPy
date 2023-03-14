@@ -1,4 +1,5 @@
 import dataclasses
+import itertools
 from typing import Sequence, Optional, Any, Callable
 
 import numpy as np
@@ -32,7 +33,7 @@ def _set_field_item(field_: storage.Field, idx: concepts.Index, value: Any):
 
 def _translate_arg(arg: Any) -> Any:
     if isinstance(arg, storage.Field):
-        return arg.data
+        return memoryview(arg.data)
     return arg
 
 
@@ -54,8 +55,10 @@ def _allocate_results(
         module: sir.CompiledModule,
         translated_args: list[Any]
 ):
-    shape_func_name = lowering.ShapeFunctionPass.shape_func(func_name)
-    shapes = module.invoke(shape_func_name, *translated_args)
+    shape_func_name = lowering.ShapeFunctionTransformer.shape_func(func_name)
+    shape_args = [arg.shape if isinstance(arg, memoryview) else [arg] for arg in translated_args]
+    shape_args = list(itertools.chain(*shape_args))
+    shapes = module.invoke(shape_func_name, *shape_args)
     if not isinstance(shapes, tuple):
         shapes = (shapes,)
     fields = []
@@ -106,8 +109,9 @@ class JitFunction:
         sir_module = lowering.lower(hast_module)
         opt = sir.OptimizationOptions(True, True, True, True)
         options = sir.CompileOptions(sir.TargetArch.X86, sir.OptimizationLevel.O3, opt)
-        compiled_module: sir.CompiledModule = sir.compile(sir_module, options, True)
-        ir = compiled_module.get_ir()
+        compiled_module = sir.CompiledModule(sir_module, options)
+        compiled_module.compile()
+        ir = compiled_module.get_stage_results()
         translated_args = [_translate_arg(arg) for arg in args]
         out_args = _allocate_results(func_name, signature, compiled_module, translated_args)
         translated_out_args = [_translate_arg(arg) for arg in out_args]
