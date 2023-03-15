@@ -99,6 +99,8 @@ def infer_object_type(arg: Any) -> Type:
             return IntegerType(8 * dtype.itemsize, False)
         if dtype.kind == 'f':
             return FloatType(8 * dtype.itemsize)
+        if dtype.kind == 'b':
+            return IntegerType(1, True)
     raise ValueError(f"cannot infer type for object `{arg}`")
 
 
