@@ -18,7 +18,7 @@ from typing import Optional
 
 
 
-class HlastToSirTransformer(SirOpTransformer):
+class CoreTransformer(SirOpTransformer):
     def visit_Module(self, node: hlast.Module) -> ops.ModuleOp:
         module = ops.ModuleOp()
 

@@ -15,7 +15,7 @@ from .utility import (
 import itertools
 
 
-class ShapeFunctionTransformer(SirOpTransformer):
+class ShapeTransformer(SirOpTransformer):
     def visit_Module(self, node: hlast.Module) -> ops.ModuleOp:
         module = ops.ModuleOp()
 
