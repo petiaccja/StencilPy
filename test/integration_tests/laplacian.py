@@ -28,10 +28,28 @@ def np_laplacian(u: np.ndarray) -> np.ndarray:
     return 4.0 * center - (left + right + bottom + top)
 
 
+@func
+def laplacian_2(u: Field) -> Field:
+    return laplacian(laplacian(u))
+
+
+def np_laplacian_2(u: np.ndarray) -> np.ndarray:
+    return np_laplacian(np_laplacian(u))
+
+
 def test_laplacian(use_jit):
     u = Field([XDim, YDim], np.random.random(size=(7, 8)).astype(np.float64))
     
     r = laplacian(u, jit=use_jit)
     e = np_laplacian(u.data)
+
+    assert np.allclose(r.data, e)
+
+
+def test_laplacian_2(use_jit):
+    u = Field([XDim, YDim], np.random.random(size=(7, 8)).astype(np.float64))
+
+    r = laplacian_2(u, jit=use_jit)
+    e = np_laplacian_2(u.data)
 
     assert np.allclose(r.data, e)

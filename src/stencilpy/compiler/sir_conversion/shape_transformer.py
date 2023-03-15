@@ -52,7 +52,7 @@ class ShapeTransformer(SirOpTransformer):
         name = shape_func_name(node.name)
         function_type = sir.FunctionType(parameters, results)
 
-        func: ops.FuncOp = self.current_region.add(ops.FuncOp(name, function_type, True, loc))
+        func: ops.FuncOp = self.current_region.add(ops.FuncOp(name, function_type, node.is_public, loc))
         self.symtable.assign(name, func)
 
         def sc():
@@ -84,6 +84,13 @@ class ShapeTransformer(SirOpTransformer):
         converted = [self.current_region.add(ops.CastOp(v, sir.IndexType(), loc)).get_result() for v in flattened]
         self.current_region.add(ops.ReturnOp(converted, loc))
         return []
+
+    def visit_Call(self, node: hlast.Call) -> list[ops.Value]:
+        loc = as_sir_loc(node.location)
+        name = shape_func_name(node.name)
+        num_outs = len(node.type_.dimensions) if isinstance(node.type_, ts.FieldType) else 0
+        args = list(itertools.chain(*[self.visit(arg) for arg in node.args]))
+        return self.current_region.add(ops.CallOp(name, num_outs, args, loc)).get_results()
 
     def visit_Constant(self, node: hlast.Constant) -> list[ops.Value]:
         loc = as_sir_loc(node.location)

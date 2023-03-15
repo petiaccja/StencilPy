@@ -134,3 +134,27 @@ def test_extract_slice(use_jit):
     assert np.all(r.data == expected)
 
 
+def test_call_scalar(use_jit):
+    @func
+    def callee(a):
+        return a
+
+    @func
+    def caller(a):
+        return callee(a)
+
+    assert caller(42, jit=use_jit) == 42
+
+
+def test_call_field(use_jit):
+    @func
+    def callee(a):
+        return a
+
+    @func
+    def caller(a):
+        return callee(a)
+
+    a = Field([TDim], np.array([1, 2, 3]))
+    r = caller(a, jit=use_jit)
+    assert np.all(r.data == a.data)

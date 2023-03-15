@@ -75,6 +75,7 @@ class Function(Node):
     parameters: list[Parameter]
     results: list[ts.Type]
     body: list[Statement]
+    is_public: bool
 
 
 @dataclasses.dataclass

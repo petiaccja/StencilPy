@@ -19,6 +19,7 @@ from collections.abc import Sequence, Mapping
 class FunctionSpecification:
     param_types: list[ts.Type]
     kwparam_types: dict[str, ts.Type]
+    is_public: bool
     dims: Optional[list[concepts.Dimension]]
 
 
@@ -108,7 +109,7 @@ class PythonToHlast(ast.NodeTransformer):
 
             if spec.dims is None:
                 type_ = ts.FunctionType(spec.param_types, results)
-                return hlast.Function(loc, type_, name, parameters, results, statements)
+                return hlast.Function(loc, type_, name, parameters, results, statements, spec.is_public)
             else:
                 type_ = ts.StencilType(spec.param_types, results, sorted(spec.dims))
                 return hlast.Stencil(loc, type_, name, parameters, results, statements, sorted(spec.dims))
@@ -148,6 +149,8 @@ class PythonToHlast(ast.NodeTransformer):
         if builtin: return builtin
         apply = self._visit_call_apply(node)
         if apply: return apply
+        call = self._visit_call_call(node)
+        if call: return call
         raise CompilationError(loc, "object not callable")
 
     def visit_Assign(self, node: ast.Assign) -> hlast.Assign:
@@ -355,6 +358,18 @@ class PythonToHlast(ast.NodeTransformer):
         type_ = ts.FieldType(stencil.type_.results[0], stencil.type_.dims)
         return hlast.Apply(loc, type_, stencil, shape, args)
 
+    def _visit_call_call(self, node: ast.Call) -> Optional[hlast.Call]:
+        loc = self.get_ast_loc(node)
+        node_callee = node.func
+        if not isinstance(node_callee, ast.Name):
+            return None
+        args = [self.visit(arg) for arg in node.args]
+        func = self._instantiate(node_callee, [arg.type_ for arg in args])
+        assert isinstance(func.type_, ts.FunctionType)
+        assert len(func.type_.results) == 1
+        type_ = func.type_.results[0]
+        return hlast.Call(loc, type_, func.name, args)
+
     def _visit_getitem_expr(self, node: ast.AST):
         if isinstance(node, ast.Tuple):
             return [self.visit(element) for element in node.elts]
@@ -391,7 +406,7 @@ class PythonToHlast(ast.NodeTransformer):
             add_closure_vars_to_symtable(self.symtable, closure_vars.globals)
             add_closure_vars_to_symtable(self.symtable, closure_vars.nonlocals)
 
-            spec = FunctionSpecification(arg_types, {}, dims)
+            spec = FunctionSpecification(arg_types, {}, False, dims)
             instantiation = self.visit_FunctionDef(python_ast.body[0], spec=spec)
             return instantiation
 
@@ -451,9 +466,9 @@ def parse_as_function(
     add_closure_vars_to_symtable(symtable, closure_vars.nonlocals)
 
     transformer = PythonToHlast(file, start_line, start_col, symtable)
-    spec = FunctionSpecification(param_types, kwparam_types, dims)
+    spec = FunctionSpecification(param_types, kwparam_types, True, dims)
     entry_point = transformer.visit_FunctionDef(python_ast.body[0], spec=spec)
-    callables = [entry_point, *transformer.instantiations.values()]
+    callables = [*transformer.instantiations.values(), entry_point]
 
     functions = [f for f in callables if isinstance(f, hlast.Function)]
     stencils = [f for f in callables if isinstance(f, hlast.Stencil)]

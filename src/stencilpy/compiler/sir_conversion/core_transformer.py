@@ -11,7 +11,8 @@ from .utility import (
     as_sir_arithmetic,
     as_sir_comparison,
     elementwise_dims_to_arg,
-    get_dim_index
+    get_dim_index,
+    shape_func_name
 )
 import itertools
 from typing import Optional
@@ -43,7 +44,7 @@ class CoreTransformer(SirOpTransformer):
         outs = [as_sir_type(r) for r in node.results if isinstance(r, ts.FieldType)]
         function_type = sir.FunctionType([*parameters, *outs], results)
 
-        func: ops.FuncOp = self.current_region.add(ops.FuncOp(name, function_type, True, loc))
+        func: ops.FuncOp = self.current_region.add(ops.FuncOp(name, function_type, node.is_public, loc))
         self.symtable.assign(name, func)
 
         def sc():
@@ -162,10 +163,36 @@ class CoreTransformer(SirOpTransformer):
 
     def visit_Call(self, node: hlast.Call) -> list[ops.Value]:
         loc = as_sir_loc(node.location)
-        func = self.symtable.lookup(node.name)
-        assert isinstance(func, ops.FuncOp)
-        args = itertools.chain(self.visit(arg) for arg in node.args)
-        return self.current_region.add(ops.CallOp(func, args, loc)).get_results()
+        name = node.name
+        args = list(itertools.chain(*[self.visit(arg) for arg in node.args]))
+        out_args = self.alloc_out_args(node, args)
+        return self.current_region.add(ops.CallOp(name, 1, [*args, *out_args], loc)).get_results()
+
+    def alloc_out_args(self, node: hlast.Call, args: list[ops.Value]) -> list[ops.Value]:
+        if not isinstance(node.type_, ts.FieldType):
+            return []
+        loc = as_sir_loc(node.location)
+        name = shape_func_name(node.name)
+        num_outs = len(node.type_.dimensions)
+        arg_shapes = [self.get_shape(arg, narg.type_, loc) for arg, narg in zip(args, node.args)]
+        arg_shapes_flat = list(itertools.chain(*arg_shapes))
+        out_shape = self.current_region.add(ops.CallOp(name, num_outs, arg_shapes_flat, loc)).get_results()
+        element_type = as_sir_type(node.type_.element_type)
+        return [self.current_region.add(ops.AllocTensorOp(element_type, out_shape, loc)).get_result()]
+
+    def get_shape(self, source: ops.Value, type_: ts.Type, loc: ops.Location):
+        if isinstance(type_, ts.FieldType):
+            ndims = len(type_.dimensions)
+            indices = [
+                self.current_region.add(ops.ConstantOp(i, sir.IndexType(), loc)).get_result()
+                for i in range(ndims)
+            ]
+            shape = [
+                self.current_region.add(ops.DimOp(source, index, loc)).get_result()
+                for index in indices
+            ]
+            return shape
+        return []
 
     def visit_Apply(self, node: hlast.Apply) -> list[ops.Value]:
         loc = as_sir_loc(node.location)
@@ -253,14 +280,12 @@ class CoreTransformer(SirOpTransformer):
         def as_index(expr: ops.Value) -> ops.Value:
             return self.current_region.add(ops.CastOp(expr, sir.IndexType(), loc)).get_result()
 
-        ndims = len(node.type_.dimensions)
-        indices = [self.current_region.add(ops.ConstantOp(i, sir.IndexType(), loc)).get_result() for i in range(ndims)]
         source = self.visit(node.source)[0]
         slices = [self.visit_slice(slc) for slc in sorted(node.slices, key=lambda slc: slc.dimension)]
         starts = [as_index(slc[0]) for slc in slices]
         stops = [as_index(slc[1]) for slc in slices]
         steps = [as_index(slc[2]) for slc in slices]
-        lengths = [self.current_region.add(ops.DimOp(source, index, loc)).get_result() for index in indices]
+        lengths = self.get_shape(source, node.source.type_, loc)
 
         adjs = [
             self.current_region.add(ops.CallOp("__adjust_slice", 2, [start, stop, step, length], loc)).get_results()
