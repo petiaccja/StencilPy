@@ -296,9 +296,9 @@ class PythonToHlast(ast.NodeTransformer):
             invalid_dim = concepts.Dimension("INVALID_DIM")
         index_max = 2**(8*ctypes.sizeof(ctypes.c_void_p) - 1) - 1
         assert isinstance(index_max, int)
-        lower = self.visit(node.lower) if node.lower else hlast.Constant(loc, ts.index_t, 0)
-        upper = self.visit(node.upper) if node.upper else hlast.Constant(loc, ts.index_t, index_max)
-        step = self.visit(node.step) if node.step else hlast.Constant(loc, ts.index_t, 1)
+        lower = self.visit(node.lower) if node.lower else None
+        upper = self.visit(node.upper) if node.upper else None
+        step = self.visit(node.step) if node.step else None
         return hlast.Slice(invalid_dim, lower, upper, step)
 
     def visit_Expr(self, node: ast.Expr) -> Any:
@@ -410,12 +410,8 @@ class PythonToHlast(ast.NodeTransformer):
             raise CompilationError(location, f"external symbol of type `{type(node.value)}` is not understood")
 
     def _promote_to_slice(self, size: hlast.Size) -> hlast.Slice:
-        loc = concepts.Location.unknown()
-        c_1 = hlast.Constant(loc, size.size.type_, 1);
         lower = size.size
-        upper = hlast.ArithmeticOperation(loc, lower.type_, size.size, c_1, hlast.ArithmeticFunction.ADD)
-        step = c_1
-        return hlast.Slice(size.dimension, lower, upper, step)
+        return hlast.Slice(size.dimension, lower, None, None, True)
 
 
 def get_source_code(definition: Callable):

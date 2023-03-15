@@ -129,6 +129,8 @@ def test_extract_slice(use_jit):
     data = np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
     a = Field([TDim, UDim], data)
     r = fn(a, jit=use_jit)
-    expected = data[1, 0:2]
+    expected = np.reshape(data[1, 0:2], newshape=(1, 2))
 
     assert np.all(r.data == expected)
+
+

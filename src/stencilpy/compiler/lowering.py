@@ -1,3 +1,4 @@
+import ctypes
 import itertools
 
 import stencilir as sir
@@ -85,7 +86,7 @@ def elementwise_dims_to_arg(
     return dims_to_arg
 
 
-def slice_size_function() -> ops.FuncOp:
+def slice_size_function(is_public = False) -> ops.FuncOp:
     loc = ops.Location("<__slice_size>", 1, 1)
 
     name = "__slice_size"
@@ -94,15 +95,26 @@ def slice_size_function() -> ops.FuncOp:
         [sir.IndexType()]
     )
 
-    func = ops.FuncOp(name, function_type, False, loc)
+    func = ops.FuncOp(name, function_type, is_public, loc)
 
     start = func.get_region_arg(0)
     stop = func.get_region_arg(1)
     step = func.get_region_arg(2)
 
-    distance = func.add(ops.ArithmeticOp(stop, start, ops.ArithmeticFunction.SUB, loc)).get_result()
-    size = func.add(ops.ArithmeticOp(distance, step, ops.ArithmeticFunction.DIV, loc)).get_result()
     c0 = func.add(ops.ConstantOp(0, sir.IndexType(), loc)).get_result()
+    c1 = func.add(ops.ConstantOp(1, sir.IndexType(), loc)).get_result()
+
+    stepm1p = func.add(ops.ArithmeticOp(step, c1, ops.ArithmeticFunction.SUB, loc)).get_result()
+    stepm1n = func.add(ops.ArithmeticOp(step, c1, ops.ArithmeticFunction.ADD, loc)).get_result()
+    is_step_negative = func.add(ops.ComparisonOp(step, c0, ops.ComparisonFunction.LT, loc)).get_result()
+    select_stepm1: ops.IfOp = func.add(ops.IfOp(is_step_negative, 1, loc))
+    select_stepm1.get_then_region().add(ops.YieldOp([stepm1n], loc))
+    select_stepm1.get_else_region().add(ops.YieldOp([stepm1p], loc))
+    stepm1 = select_stepm1.get_results()[0]
+
+    stop_aligned = func.add(ops.ArithmeticOp(stop, stepm1, ops.ArithmeticFunction.ADD, loc)).get_result()
+    distance = func.add(ops.ArithmeticOp(stop_aligned, start, ops.ArithmeticFunction.SUB, loc)).get_result()
+    size = func.add(ops.ArithmeticOp(distance, step, ops.ArithmeticFunction.DIV, loc)).get_result()
     clamped = func.add(ops.MaxOp(size, c0, loc)).get_result()
     func.add(ops.ReturnOp([clamped], loc))
 
@@ -118,7 +130,7 @@ def is_slice_adjustment_trivial(
     return is_start_trivial and is_step_trivial
 
 
-def adjust_slice_trivial_function() -> ops.FuncOp:
+def adjust_slice_trivial_function(is_public = False) -> ops.FuncOp:
     """
     Simple method for limited cases to help optimization.
     Use only when:
@@ -135,7 +147,7 @@ def adjust_slice_trivial_function() -> ops.FuncOp:
         [sir.IndexType(), sir.IndexType()]
     )
 
-    func = ops.FuncOp(name, function_type, False, loc)
+    func = ops.FuncOp(name, function_type, is_public, loc)
 
     start = func.get_region_arg(0)
     stop = func.get_region_arg(1)
@@ -154,7 +166,7 @@ def adjust_slice_trivial_function() -> ops.FuncOp:
     return func
 
 
-def adjust_slice_function() -> ops.FuncOp:
+def adjust_slice_function(is_public = False) -> ops.FuncOp:
     loc = ops.Location("<__adjust_slice>", 1, 1)
 
     name = "__adjust_slice"
@@ -162,7 +174,7 @@ def adjust_slice_function() -> ops.FuncOp:
         [sir.IndexType(), sir.IndexType(), sir.IndexType(), sir.IndexType()],
         [sir.IndexType(), sir.IndexType()]
     )
-    func = ops.FuncOp(name, function_type, True, loc)
+    func = ops.FuncOp(name, function_type, is_public, loc)
 
     c0 = func.add(ops.ConstantOp(0, sir.IndexType(), loc)).get_result()
     cm1 = func.add(ops.ConstantOp(-1, sir.IndexType(), loc)).get_result()
@@ -211,7 +223,7 @@ def adjust_slice_function() -> ops.FuncOp:
         select(
             gte(stop, length),
             select(lt(step, c0), add(length, cm1), length),
-            length
+            stop
         )
     )
 
@@ -235,6 +247,50 @@ class SirOpTransformer(NodeTransformer):
     def __init__(self):
         self.symtable = SymbolTable()
         self.region_stack = []
+
+    def visit_slice(self, slc: hlast.Slice) -> tuple[ops.Value, ops.Value, ops.Value]:
+        if slc.single:
+            loc = as_sir_loc(slc.lower.location)
+
+            def as_index(expr: ops.Value) -> ops.Value:
+                return self.current_region.add(ops.CastOp(expr, sir.IndexType(), loc)).get_result()
+
+            c1 = self.current_region.add(ops.ConstantOp(1, sir.IndexType(), loc)).get_result()
+            start = as_index(self.visit(slc.lower)[0])
+            stop = self.current_region.add(ops.ArithmeticOp(start, c1, ops.ArithmeticFunction.ADD, loc)).get_result()
+            step = c1
+            return start, stop, step
+        else:
+            loc = ops.Location("<slice_autofill>", 1, 1)
+            constant_pos_step = False
+            index_min = -2 ** (ctypes.sizeof(ctypes.c_void_p) * 8 - 1)
+            index_max = -(index_min + 1)
+            if slc.step:
+                constant_pos_step = isinstance(slc.step, hlast.Constant) and slc.step.value > 0
+                step = self.visit(slc.step)[0]
+            else:
+                constant_pos_step = True
+                step = self.current_region.add(ops.ConstantOp(1, sir.IndexType(), loc)).get_result()
+
+            if slc.lower:
+                start = self.visit(slc.lower)[0]
+            else:
+                start = (
+                    self.current_region.add(ops.ConstantOp(0, sir.IndexType(), loc)).get_result()
+                    if constant_pos_step
+                    else self.current_region.add(ops.ConstantOp(index_min, sir.IndexType(), loc)).get_result()
+                )
+
+            if slc.upper:
+                stop = self.visit(slc.upper)[0]
+            else:
+                stop = (
+                    self.current_region.add(ops.ConstantOp(index_max, sir.IndexType(), loc)).get_result()
+                    if constant_pos_step
+                    else self.current_region.add(ops.ConstantOp(index_min, sir.IndexType(), loc)).get_result()
+                )
+
+            return start, stop, step
 
 
 class ShapeFunctionTransformer(SirOpTransformer):
@@ -403,24 +459,22 @@ class ShapeFunctionTransformer(SirOpTransformer):
         def as_index(expr: ops.Value) -> ops.Value:
             return self.current_region.add(ops.CastOp(expr, sir.IndexType(), loc)).get_result()
 
-        slices = [self._visit_slice(slc) for slc in sorted(node.slices, key=lambda slc: slc.dimension)]
+        slices = [self.visit_slice(slc) for slc in sorted(node.slices, key=lambda slc: slc.dimension)]
 
         starts = [as_index(slc[0]) for slc in slices]
         stops = [as_index(slc[1]) for slc in slices]
         steps = [as_index(slc[2]) for slc in slices]
         lengths: list[ops.Value] = self.visit(node.source)
 
-        adjust_slice_fun = self.symtable.lookup("__adjust_slice")
         adjs = [
-            self.current_region.add(ops.CallOp(adjust_slice_fun, [start, stop, step, length], loc)).get_results()
+            self.current_region.add(ops.CallOp("__adjust_slice", 2, [start, stop, step, length], loc)).get_results()
             for start, stop, step, length in zip(starts, stops, steps, lengths)
         ]
         start_adjs = [adj[0] for adj in adjs]
         stop_adjs = [adj[1] for adj in adjs]
 
-        slice_size_fun = self.symtable.lookup("__slice_size")
         shape = [
-            self.current_region.add(ops.CallOp(slice_size_fun, [start, stop, step], loc)).get_results()[0]
+            self.current_region.add(ops.CallOp("__slice_size", 1, [start, stop, step], loc)).get_results()[0]
             for start, stop, step in zip(start_adjs, stop_adjs, steps)
         ]
         return shape
@@ -430,9 +484,6 @@ class ShapeFunctionTransformer(SirOpTransformer):
         value = self.visit(node.value)[0]
         type_ = as_sir_type(node.type_)
         return self.current_region.add(ops.ConstantOp(value, type_, loc)).get_result()
-
-    def _visit_slice(self, slc: hlast.Slice) -> tuple[ops.Value, ops.Value, ops.Value]:
-        return self.visit(slc.lower)[0], self.visit(slc.upper)[0], self.visit(slc.step)[0]
 
 
 class HlastToSirTransformer(SirOpTransformer):
@@ -482,7 +533,7 @@ class HlastToSirTransformer(SirOpTransformer):
         function_type = sir.FunctionType(parameters, results)
         ndims = len(node.dims)
 
-        stencil: ops.StencilOp = self.current_region.add(ops.StencilOp(name, function_type, ndims, True, loc))
+        stencil: ops.StencilOp = self.current_region.add(ops.StencilOp(name, function_type, ndims, False, loc))
         self.symtable.assign(name, stencil)
 
         def sc():
@@ -666,29 +717,28 @@ class HlastToSirTransformer(SirOpTransformer):
     def visit_ExtractSlice(self, node: hlast.ExtractSlice) -> list[ops.Value]:
         assert isinstance(node.type_, ts.FieldType)
         loc = as_sir_loc(node.location)
-        ndims = len(node.type_.dimensions)
 
-        sorted_slices = sorted(node.slices, key=lambda slc: slc.dimension)
+        def as_index(expr: ops.Value) -> ops.Value:
+            return self.current_region.add(ops.CastOp(expr, sir.IndexType(), loc)).get_result()
+
+        ndims = len(node.type_.dimensions)
         indices = [self.current_region.add(ops.ConstantOp(i, sir.IndexType(), loc)).get_result() for i in range(ndims)]
         source = self.visit(node.source)[0]
-        starts = [self.visit(slc.lower)[0] for slc in sorted_slices]
-        stops = [self.visit(slc.upper)[0] for slc in sorted_slices]
-        steps = [self.visit(slc.step)[0] for slc in sorted_slices]
+        slices = [self.visit_slice(slc) for slc in sorted(node.slices, key=lambda slc: slc.dimension)]
+        starts = [as_index(slc[0]) for slc in slices]
+        stops = [as_index(slc[1]) for slc in slices]
+        steps = [as_index(slc[2]) for slc in slices]
         lengths = [self.current_region.add(ops.DimOp(source, index, loc)).get_result() for index in indices]
 
-        adjust_slice_fun = self.symtable.lookup("__adjust_slice")
-        assert adjust_slice_fun
         adjs = [
-            self.current_region.add(ops.CallOp(adjust_slice_fun, [start, stop, step, length], loc)).get_results()
+            self.current_region.add(ops.CallOp("__adjust_slice", 2, [start, stop, step, length], loc)).get_results()
             for start, stop, step, length in zip(starts, stops, steps, lengths)
         ]
         start_adjs = [adj[0] for adj in adjs]
         stop_adjs = [adj[1] for adj in adjs]
 
-        slice_size_fun = self.symtable.lookup("__slice_size")
-        assert slice_size_fun
         sizes = [
-            self.current_region.add(ops.CallOp(slice_size_fun, [start, stop, step], loc)).get_results()[0]
+            self.current_region.add(ops.CallOp("__slice_size", 1, [start, stop, step], loc)).get_results()[0]
             for start, stop, step in zip(start_adjs, stop_adjs, steps)
         ]
 
@@ -743,6 +793,7 @@ class HlastToSirTransformer(SirOpTransformer):
             self.pop_region()
             return converted
         return self.symtable.scope(sc)
+
 
 def lower(hlast_module: hlast.Module) -> ops.ModuleOp:
     shape_module: ops.ModuleOp = ShapeFunctionTransformer().visit(hlast_module)

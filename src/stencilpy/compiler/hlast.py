@@ -47,9 +47,10 @@ class Expr(Node):
 @dataclasses.dataclass
 class Slice:
     dimension: Dimension
-    lower: Expr
-    upper: Expr
-    step: Expr
+    lower: Optional[Expr]
+    upper: Optional[Expr]
+    step: Optional[Expr]
+    single: bool = False
 
 
 @dataclasses.dataclass
