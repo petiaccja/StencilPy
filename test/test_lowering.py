@@ -1,6 +1,6 @@
 import pytest
 
-from stencilpy.compiler import lowering
+from stencilpy.compiler.sir_conversion import internal_functions
 import stencilir as sir
 from stencilir import ops
 
@@ -8,7 +8,7 @@ from stencilir import ops
 @pytest.fixture
 def slice_size_module():
     module = ops.ModuleOp()
-    module.add(lowering.slice_size_function(True))
+    module.add(internal_functions.slice_size_function(True))
 
     opt_options = sir.OptimizationOptions(True, True, True, True)
     compile_options = sir.CompileOptions(sir.TargetArch.X86, sir.OptimizationLevel.O3, opt_options)
@@ -20,7 +20,7 @@ def slice_size_module():
 @pytest.fixture
 def adjust_slice_module():
     module = ops.ModuleOp()
-    module.add(lowering.adjust_slice_function(True))
+    module.add(internal_functions.adjust_slice_function(True))
 
     opt_options = sir.OptimizationOptions(True, True, True, True)
     compile_options = sir.CompileOptions(sir.TargetArch.X86, sir.OptimizationLevel.O3, opt_options)
@@ -32,7 +32,7 @@ def adjust_slice_module():
 @pytest.fixture
 def adjust_slice_trivial_module():
     module = ops.ModuleOp()
-    module.add(lowering.adjust_slice_trivial_function(True))
+    module.add(internal_functions.adjust_slice_trivial_function(True))
 
     opt_options = sir.OptimizationOptions(True, True, True, True)
     compile_options = sir.CompileOptions(sir.TargetArch.X86, sir.OptimizationLevel.O3, opt_options)

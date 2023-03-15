@@ -13,7 +13,7 @@ from stencilpy.compiler import utility
 
 import stencilir as sir
 from stencilpy.compiler import types as ts
-from stencilpy.compiler import lowering
+from stencilpy.compiler import sir_conversion
 
 
 def _generate_indices(slices: Sequence[slice]) -> tuple[int, ...]:
@@ -55,7 +55,7 @@ def _allocate_results(
         module: sir.CompiledModule,
         translated_args: list[Any]
 ):
-    shape_func_name = lowering.ShapeFunctionTransformer.shape_func(func_name)
+    shape_func_name = sir_conversion.shape_func_name(func_name)
     shape_args = [arg.shape if isinstance(arg, memoryview) else [arg] for arg in translated_args]
     shape_args = list(itertools.chain(*shape_args))
     shapes = module.invoke(shape_func_name, *shape_args)
@@ -106,7 +106,7 @@ class JitFunction:
         kwarg_types = {name: ts.infer_object_type(value) for name, value in kwargs.items()}
         hast_module = self.parse(arg_types, kwarg_types)
         signature = _get_signature(hast_module, func_name)
-        sir_module = lowering.lower(hast_module)
+        sir_module = sir_conversion.hlast_to_sir(hast_module)
         opt = sir.OptimizationOptions(True, True, True, True)
         options = sir.CompileOptions(sir.TargetArch.X86, sir.OptimizationLevel.O3, opt)
         compiled_module = sir.CompiledModule(sir_module, options)
