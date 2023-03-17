@@ -102,7 +102,7 @@ class JitFunction:
 
     def call_jit(self, *args, **kwargs):
         arg_types = [ts.infer_object_type(arg) for arg in args]
-        func_name = utility.mangle_name(self.definition.__name__, arg_types)
+        func_name = utility.mangle_name(f"{self.definition.__module__}.{self.definition.__name__}", arg_types)
         kwarg_types = {name: ts.infer_object_type(value) for name, value in kwargs.items()}
         hast_module = self.parse(arg_types, kwarg_types)
         signature = _get_signature(hast_module, func_name)
@@ -110,7 +110,7 @@ class JitFunction:
         opt = sir.OptimizationOptions(True, True, True, True)
         options = sir.CompileOptions(sir.TargetArch.X86, sir.OptimizationLevel.O3, opt)
         compiled_module = sir.CompiledModule(sir_module, options)
-        compiled_module.compile()
+        compiled_module.compile(True)
         ir = compiled_module.get_stage_results()
         translated_args = [_translate_arg(arg) for arg in args]
         out_args = _allocate_results(func_name, signature, compiled_module, translated_args)

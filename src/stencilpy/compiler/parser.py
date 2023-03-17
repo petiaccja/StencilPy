@@ -17,6 +17,7 @@ from collections.abc import Sequence, Mapping
 
 @dataclasses.dataclass
 class FunctionSpecification:
+    mangled_name: str
     param_types: list[ts.Type]
     kwparam_types: dict[str, ts.Type]
     is_public: bool
@@ -90,7 +91,7 @@ class PythonToHlast(ast.NodeTransformer):
         assert spec is not None
         def sc():
             loc = self.get_ast_loc(node)
-            name = utility.mangle_name(node.name, spec.param_types, spec.dims)
+            name = spec.mangled_name
             if len(node.args.args) != len(spec.param_types):
                 raise ArgumentCountError(loc, len(node.args.args), len(spec.param_types))
             parameters = [
@@ -345,14 +346,14 @@ class PythonToHlast(ast.NodeTransformer):
         node_shape = node.func
         if not isinstance(node_shape, ast.Subscript):
             return None
-        node_stencil = node_shape.value
-        if not isinstance(node_stencil, ast.Name):
+        callable_ = self.visit(node_shape.value)
+        if not isinstance(callable_, concepts.Stencil):
             return None
         sizes: Sequence[hlast.Size] = self._visit_getitem_expr(node_shape.slice)
         shape = {sz.dimension: sz.size for sz in sizes}
         dims = sorted(sz.dimension for sz in sizes)
         args = [self.visit(arg) for arg in node.args]
-        stencil = self._instantiate(node_stencil, [arg.type_ for arg in args], dims)
+        stencil = self.instantiate(callable_.definition, [arg.type_ for arg in args], False, dims)
         assert isinstance(stencil.type_, ts.StencilType)
         assert len(stencil.type_.results) == 1
         type_ = ts.FieldType(stencil.type_.results[0], stencil.type_.dims)
@@ -360,11 +361,11 @@ class PythonToHlast(ast.NodeTransformer):
 
     def _visit_call_call(self, node: ast.Call) -> Optional[hlast.Call]:
         loc = self.get_ast_loc(node)
-        node_callee = node.func
-        if not isinstance(node_callee, ast.Name):
+        callable_ = self.visit(node.func)
+        if not isinstance(callable_, concepts.Function):
             return None
         args = [self.visit(arg) for arg in node.args]
-        func = self._instantiate(node_callee, [arg.type_ for arg in args])
+        func = self.instantiate(callable_.definition, [arg.type_ for arg in args], False)
         assert isinstance(func.type_, ts.FunctionType)
         assert len(func.type_.results) == 1
         type_ = func.type_.results[0]
@@ -375,26 +376,20 @@ class PythonToHlast(ast.NodeTransformer):
             return [self.visit(element) for element in node.elts]
         return [self.visit(node)]
 
-    def _instantiate(
+    def instantiate(
             self,
-            name: ast.Name,
+            definition: Callable,
             arg_types: list[ts.Type],
+            is_public: bool,
             dims: Optional[list[concepts.Dimension]] = None
-    ):
-        mangled_name = utility.mangle_name(name.id, arg_types, dims)
+    ) -> hlast.Function | hlast.Stencil:
+        name = definition.__name__
+        module = definition.__module__
+        mangled_name = utility.mangle_name(f"{module}.{name}", arg_types, dims)
         if mangled_name in self.instantiations:
             return self.instantiations[mangled_name]
 
-        closure_var = self.symtable.lookup(name.id)
-        loc = self.get_ast_loc(name)
-        if (
-                not isinstance(closure_var, hlast.ClosureVariable)
-                or not isinstance(closure_var.value, (concepts.Stencil, concepts.Function))
-        ):
-            raise CompilationError(loc, f"object `{name.id}` being called is not a stencil")
-
         def sc():
-            definition = closure_var.value.definition
             source_code, file, start_line, start_col = get_source_code(definition)
             python_ast = ast.parse(source_code)
 
@@ -406,19 +401,25 @@ class PythonToHlast(ast.NodeTransformer):
             add_closure_vars_to_symtable(self.symtable, closure_vars.globals)
             add_closure_vars_to_symtable(self.symtable, closure_vars.nonlocals)
 
-            spec = FunctionSpecification(arg_types, {}, False, dims)
+            spec = FunctionSpecification(mangled_name, arg_types, {}, is_public, dims)
             instantiation = self.visit_FunctionDef(python_ast.body[0], spec=spec)
             return instantiation
 
         instantiation = self.symtable.scope(sc)
         self.instantiations[instantiation.name] = self.symtable.scope(sc)
-        return hlast.SymbolRef(loc, instantiation.type_, instantiation.name)
+        return instantiation
 
     def _process_external_symbol(self, node: hlast.ClosureVariable, location: concepts.Location) -> Any:
+        # Constant expressions
         if isinstance(node.type_, (ts.IndexType, ts.IntegerType, ts.FloatType)):
             return hlast.Constant(location, node.type_, node.value)
+        # Stencils, functions
+        elif isinstance(node.value, (concepts.Function, concepts.Stencil)):
+            return node.value
+        # Builtins
         elif isinstance(node.value, concepts.Builtin):
             return node.value
+        # Dimensions
         elif isinstance(node.value, concepts.Dimension):
             return node.value
         else:
@@ -466,10 +467,9 @@ def parse_as_function(
     add_closure_vars_to_symtable(symtable, closure_vars.nonlocals)
 
     transformer = PythonToHlast(file, start_line, start_col, symtable)
-    spec = FunctionSpecification(param_types, kwparam_types, True, dims)
-    entry_point = transformer.visit_FunctionDef(python_ast.body[0], spec=spec)
-    callables = [*transformer.instantiations.values(), entry_point]
+    transformer.instantiate(definition, param_types, True, dims)
 
+    callables = [*transformer.instantiations.values()]
     functions = [f for f in callables if isinstance(f, hlast.Function)]
     stencils = [f for f in callables if isinstance(f, hlast.Stencil)]
     module = hlast.Module(hlast.Location.unknown(), ts.VoidType(), functions, stencils)
