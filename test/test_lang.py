@@ -158,3 +158,13 @@ def test_call_field(use_jit):
     a = Field([TDim], np.array([1, 2, 3]))
     r = caller(a, jit=use_jit)
     assert np.all(r.data == a.data)
+
+
+def test_attribute(use_jit):
+    from . import helpers
+
+    @func
+    def fn():
+        return helpers.CONSTANT
+
+    assert fn(jit=use_jit) == helpers.CONSTANT

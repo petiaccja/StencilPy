@@ -1,0 +1,1 @@
+CONSTANT = 42  # Used for attribute access tests

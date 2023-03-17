@@ -141,7 +141,7 @@ class PythonToHlast(ast.NodeTransformer):
         if not symbol_entry:
             raise UndefinedSymbolError(loc, name)
         if isinstance(symbol_entry, hlast.ClosureVariable):
-            return self._process_external_symbol(symbol_entry, loc)
+            return self._process_closure_value(symbol_entry.value, loc)
         return hlast.SymbolRef(loc, symbol_entry, name)
 
     def visit_Call(self, node: ast.Call) -> hlast.Expr:
@@ -308,6 +308,23 @@ class PythonToHlast(ast.NodeTransformer):
     def visit_Expr(self, node: ast.Expr) -> Any:
         return self.visit(node.value)
 
+    def visit_Attribute(self, node: ast.Attribute) -> Any:
+        loc = self.get_ast_loc(node)
+        if isinstance(node.value, ast.Attribute):
+            value = self.visit(node.value)
+            if hasattr(value, node.attr):
+                return getattr(value, node.attr)
+            raise CompilationError(loc, f"object has no attribute {node.attr}")
+        if isinstance(node.value, ast.Name):
+            closure_var = self.symtable.lookup(node.value.id)
+            if not isinstance(closure_var, hlast.ClosureVariable):
+                raise CompilationError(loc, "expected a closure variable")
+            value = closure_var.value
+            if hasattr(value, node.attr):
+                return self._process_closure_value(getattr(value, node.attr), loc)
+            raise CompilationError(loc, f"object has no attribute {node.attr}")
+        raise CompilationError(loc, "expected a name or an attribute of a name")
+
     def visit_Add(self, node: ast.Add) -> Any: return hlast.ArithmeticFunction.ADD
     def visit_Sub(self, node: ast.Add) -> Any: return hlast.ArithmeticFunction.SUB
     def visit_Mult(self, node: ast.Add) -> Any: return hlast.ArithmeticFunction.MUL
@@ -409,21 +426,27 @@ class PythonToHlast(ast.NodeTransformer):
         self.instantiations[instantiation.name] = self.symtable.scope(sc)
         return instantiation
 
-    def _process_external_symbol(self, node: hlast.ClosureVariable, location: concepts.Location) -> Any:
-        # Constant expressions
-        if isinstance(node.type_, (ts.IndexType, ts.IntegerType, ts.FloatType)):
-            return hlast.Constant(location, node.type_, node.value)
+    def _process_closure_value(self, value: Any, location: concepts.Location) -> Any:
         # Stencils, functions
-        elif isinstance(node.value, (concepts.Function, concepts.Stencil)):
-            return node.value
+        if isinstance(value, (concepts.Function, concepts.Stencil)):
+            return value
         # Builtins
-        elif isinstance(node.value, concepts.Builtin):
-            return node.value
+        elif isinstance(value, concepts.Builtin):
+            return value
         # Dimensions
-        elif isinstance(node.value, concepts.Dimension):
-            return node.value
-        else:
-            raise CompilationError(location, f"external symbol of type `{type(node.value)}` is not understood")
+        elif isinstance(value, concepts.Dimension):
+            return value
+        # Modules
+        elif inspect.ismodule(value):
+            return value
+        # Constant expressions
+        try:
+            type_ = ts.infer_object_type(value)
+            if isinstance(type_, (ts.IndexType, ts.IntegerType, ts.FloatType)):
+                return hlast.Constant(location, type_, value)
+        except Exception:
+            pass
+        raise CompilationError(location, f"external symbol of type `{type(value.value)}` is not understood")
 
     def _promote_to_slice(self, size: hlast.Size) -> hlast.Slice:
         lower = size.size
