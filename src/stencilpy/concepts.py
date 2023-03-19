@@ -1,6 +1,6 @@
 import dataclasses
 import typing
-from typing import Optional, Callable
+from typing import Optional, Callable, Any
 from stencilpy import utility
 import abc
 
@@ -86,5 +86,17 @@ class Stencil(typing.Protocol):
         ...
 
 
+@dataclasses.dataclass
+class MetaFunc:
+    definition: Callable[[bool, Any, ...], Any]
+
+    def __call__(self, *args, is_jit=False, **kwargs):
+        return self.definition(is_jit, *args, **kwargs)
+
+
 def builtin(definition: Callable):
     return Builtin(definition)
+
+
+def metafunc(definition: Callable[[bool, Any, ...], Any]):
+    return MetaFunc(definition)

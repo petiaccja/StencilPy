@@ -305,7 +305,7 @@ class CoreTransformer(SirOpTransformer):
         loc = as_sir_loc(node.location)
         value = self.visit(node.value)
         type_ = as_sir_type(node.type_)
-        return self.current_region.add(ops.CastOp(value, type_, loc)).get_results()
+        return self.current_region.add(ops.CastOp(*value, type_, loc)).get_results()
 
     def visit_Min(self, node: hlast.Max) -> list[ops.Value]:
         loc = as_sir_loc(node.location)

@@ -46,9 +46,17 @@ def builtin_index(transformer: "PythonToHlast", location: concepts.Location, *ar
     return hlast.Index(location, type_)
 
 
+def builtin_cast(transformer: Any, location: concepts.Location, args: Sequence[ast.AST]):
+    assert len(args) == 2
+    value = transformer.visit(args[0])
+    type_ = transformer.visit(args[1])
+    return hlast.Cast(location, type_, value, type_)
+
+
 _BUILTIN_MAPPING = {
     "shape": builtin_shape,
     "index": builtin_index,
+    "cast": builtin_cast,
 }
 
 
@@ -148,6 +156,8 @@ class PythonToHlast(ast.NodeTransformer):
         loc = self.get_ast_loc(node)
         builtin = self._visit_call_builtin(node)
         if builtin: return builtin
+        meta = self._visit_call_meta(node)
+        if meta: return meta
         apply = self._visit_call_apply(node)
         if apply: return apply
         call = self._visit_call_call(node)
@@ -388,6 +398,15 @@ class PythonToHlast(ast.NodeTransformer):
         type_ = func.type_.results[0]
         return hlast.Call(loc, type_, func.name, args)
 
+    def _visit_call_meta(self, node: ast.Call) -> Optional[Any]:
+        try:
+            func = self.visit(node.func)
+            assert isinstance(func, concepts.MetaFunc)
+            args = [self.visit(arg) for arg in node.args]
+            return func(*args, is_jit=True)
+        except:
+            return None
+
     def _visit_getitem_expr(self, node: ast.AST):
         if isinstance(node, ast.Tuple):
             return [self.visit(element) for element in node.elts]
@@ -439,6 +458,9 @@ class PythonToHlast(ast.NodeTransformer):
         # Modules
         elif inspect.ismodule(value):
             return value
+        # Types
+        elif isinstance(value, ts.Type):
+            return value
         # Constant expressions
         try:
             type_ = ts.infer_object_type(value)
@@ -446,7 +468,7 @@ class PythonToHlast(ast.NodeTransformer):
                 return hlast.Constant(location, type_, value)
         except Exception:
             pass
-        raise CompilationError(location, f"external symbol of type `{type(value.value)}` is not understood")
+        raise CompilationError(location, f"closure variable of type `{type(value)}` is not understood")
 
     def _promote_to_slice(self, size: hlast.Size) -> hlast.Slice:
         lower = size.size

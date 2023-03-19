@@ -31,3 +31,14 @@ def test_index(use_jit):
     assert np.allclose(fn(jit=use_jit).data, 0.0)
 
 
+def test_cast_scalar(use_jit):
+    @func
+    def fn(a: float) -> float:
+        return cast(a, ts.float32_t)
+
+    a = np.float64(3.14159265358979)
+    r = fn(a, jit=use_jit)
+    assert a != r
+    assert np.isclose(a, r)
+
+

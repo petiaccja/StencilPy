@@ -87,12 +87,7 @@ class StencilType(Type):
 
 
 def infer_object_type(arg: Any) -> Type:
-    if isinstance(arg, storage.Field):
-        dtype = infer_object_type(arg.data[tuple([0] * arg.data.ndim)])
-        dims = arg.sorted_dimensions
-        return FieldType(dtype, dims)
-    else:
-        dtype = np.dtype(type(arg))
+    def translate_dtype(dtype: np.typing.DTypeLike):
         if dtype.kind == 'i':
             return IntegerType(8 * dtype.itemsize, True)
         if dtype.kind == 'u':
@@ -101,6 +96,14 @@ def infer_object_type(arg: Any) -> Type:
             return FloatType(8 * dtype.itemsize)
         if dtype.kind == 'b':
             return IntegerType(1, True)
+
+    if isinstance(arg, storage.Field):
+        element_type = translate_dtype(arg.data.dtype)
+        dims = arg.sorted_dimensions
+        return FieldType(element_type, dims)
+    else:
+        dtype = np.dtype(type(arg))
+        return translate_dtype(dtype)
     raise ValueError(f"cannot infer type for object `{arg}`")
 
 
