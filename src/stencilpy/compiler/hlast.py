@@ -5,6 +5,29 @@ from stencilpy.concepts import Location, Dimension
 import enum
 
 
+#-------------------------------------------------------------------------------
+# Basic nodes
+#-------------------------------------------------------------------------------
+
+@dataclasses.dataclass
+class Node:
+    location: Location
+    type_: ts.Type
+
+
+@dataclasses.dataclass
+class Expr(Node):
+    ...
+
+@dataclasses.dataclass
+class Statement(Node):
+    ...
+
+
+#-------------------------------------------------------------------------------
+# Enums
+#-------------------------------------------------------------------------------
+
 class ArithmeticFunction(enum.Enum):
     ADD = enum.auto()
     SUB = enum.auto()
@@ -25,25 +48,18 @@ class ComparisonFunction(enum.Enum):
     GT = enum.auto()
     LTE = enum.auto()
     GTE = enum.auto()
+    
 
+#-------------------------------------------------------------------------------
+# Structures
+#-------------------------------------------------------------------------------
 
 @dataclasses.dataclass
 class Parameter:
     name: str
     type_: ts.Type
-
-
-@dataclasses.dataclass
-class Node:
-    location: Location
-    type_: ts.Type
-
-
-@dataclasses.dataclass
-class Expr(Node):
-    ...
-
-
+    
+    
 @dataclasses.dataclass
 class Slice:
     dimension: Dimension
@@ -59,21 +75,15 @@ class Size:
     size: Expr
 
 
-@dataclasses.dataclass
-class Statement(Node):
-    ...
-
-
-@dataclasses.dataclass
-class SymbolRef(Expr):
-    name: str
-
+#-------------------------------------------------------------------------------
+# Module structure
+#-------------------------------------------------------------------------------
 
 @dataclasses.dataclass
 class Function(Node):
     name: str
     parameters: list[Parameter]
-    results: list[ts.Type]
+    result: ts.Type
     body: list[Statement]
     is_public: bool
 
@@ -82,14 +92,14 @@ class Function(Node):
 class Stencil(Node):
     name: str
     parameters: list[Parameter]
-    results: list[ts.Type]
+    result: ts.Type
     body: list[Statement]
     dims: list[Dimension]
 
 
 @dataclasses.dataclass
 class Return(Statement):
-    values: list[Expr]
+    value: Expr
 
 
 @dataclasses.dataclass
@@ -100,20 +110,61 @@ class Call(Expr):
 
 @dataclasses.dataclass
 class Apply(Expr):
-    stencil: SymbolRef
+    stencil: str
     shape: dict[Dimension, Expr]
     args: list[Expr]
 
 
 @dataclasses.dataclass
-class Constant(Expr):
-    value: Any
+class Module(Node):
+    functions: list[Function]
+    stencils: list[Stencil]
+
+
+#-------------------------------------------------------------------------------
+# Symbols
+#-------------------------------------------------------------------------------
+
+@dataclasses.dataclass
+class SymbolRef(Expr):
+    name: str
 
 
 @dataclasses.dataclass
 class Assign(Statement):
     names: list[str]
     values: list[Expr]
+
+
+#-------------------------------------------------------------------------------
+# Control flow
+#-------------------------------------------------------------------------------
+
+@dataclasses.dataclass
+class If(Expr):
+    cond: Expr
+    then_body: list[Statement]
+    else_body: list[Statement]
+
+
+@dataclasses.dataclass
+class Yield(Statement):
+    values: list[Expr]
+
+
+#-------------------------------------------------------------------------------
+# Arithmetic & logic
+#-------------------------------------------------------------------------------
+
+@dataclasses.dataclass
+class Cast(Expr):
+    value: Expr
+    type: ts.Type
+    
+    
+@dataclasses.dataclass
+class Constant(Expr):
+    value: Any
 
 
 @dataclasses.dataclass
@@ -131,46 +182,31 @@ class ComparisonOperation(Expr):
 
 
 @dataclasses.dataclass
+class Min(Expr):
+    lhs: Expr
+    rhs: Expr
+
+
+@dataclasses.dataclass
+class Max(Expr):
+    lhs: Expr
+    rhs: Expr
+
+
+@dataclasses.dataclass
 class ElementwiseOperation(Expr):
     args: list[Expr]
     element_expr: Callable[[list[Expr]], Expr]
 
 
+#-------------------------------------------------------------------------------
+# Tensor
+#-------------------------------------------------------------------------------
+
 @dataclasses.dataclass
 class Shape(Expr):
     field: Expr
     dim: Dimension
-
-
-@dataclasses.dataclass
-class Index(Expr):
-    pass
-
-
-@dataclasses.dataclass
-class Exchange(Expr):
-    index: Expr
-    value: Expr
-    old_dim: Dimension
-    new_dim: Dimension
-
-
-@dataclasses.dataclass
-class Sample(Expr):
-    field: Expr
-    index: Expr
-
-
-@dataclasses.dataclass
-class If(Expr):
-    cond: Expr
-    then_body: list[Statement]
-    else_body: list[Statement]
-
-
-@dataclasses.dataclass
-class Yield(Statement):
-    values: list[Expr]
 
 
 @dataclasses.dataclass
@@ -192,41 +228,34 @@ class AllocEmpty(Expr):
     shape: list[Size]
 
 
+#-------------------------------------------------------------------------------
+# Stencil intrinsics
+#-------------------------------------------------------------------------------
+
 @dataclasses.dataclass
-class Cast(Expr):
+class Index(Expr):
+    pass
+
+
+@dataclasses.dataclass
+class Exchange(Expr):
+    index: Expr
     value: Expr
-    type: ts.Type
+    old_dim: Dimension
+    new_dim: Dimension
 
 
 @dataclasses.dataclass
-class Min(Expr):
-    lhs: Expr
-    rhs: Expr
+class Sample(Expr):
+    field: Expr
+    index: Expr
 
 
-@dataclasses.dataclass
-class Max(Expr):
-    lhs: Expr
-    rhs: Expr
-
-
-@dataclasses.dataclass
-class Block(Expr):
-    body: list[Statement]
-
+#-------------------------------------------------------------------------------
+# Special nodes
+#-------------------------------------------------------------------------------
 
 @dataclasses.dataclass
 class ClosureVariable(Node):
     name: str
     value: Any
-
-
-@dataclasses.dataclass
-class MetaConstant(Node):
-    value: Any
-
-
-@dataclasses.dataclass
-class Module(Node):
-    functions: list[Function]
-    stencils: list[Stencil]

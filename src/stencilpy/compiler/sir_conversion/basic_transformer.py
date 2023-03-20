@@ -12,6 +12,10 @@ class SirOpTransformer(NodeTransformer):
     current_region: ops.Region = None
     symtable: SymbolTable = None
 
+    def __init__(self):
+        self.symtable = SymbolTable()
+        self.region_stack = []
+
     def push_region(self, region: ops.Region):
         self.region_stack.append(region)
         self.current_region = region
@@ -20,20 +24,19 @@ class SirOpTransformer(NodeTransformer):
         self.region_stack.pop(len(self.region_stack) - 1)
         self.current_region = self.region_stack[-1] if self.region_stack else None
 
-    def __init__(self):
-        self.symtable = SymbolTable()
-        self.region_stack = []
+    def insert_op(self, op: ops.Operation):
+        return self.current_region.add(op)
 
-    def visit_slice(self, slc: hlast.Slice) -> tuple[ops.Value, ops.Value, ops.Value]:
+    def _visit_slice(self, slc: hlast.Slice) -> tuple[ops.Value, ops.Value, ops.Value]:
         if slc.single:
             loc = as_sir_loc(slc.lower.location)
 
             def as_index(expr: ops.Value) -> ops.Value:
-                return self.current_region.add(ops.CastOp(expr, sir.IndexType(), loc)).get_result()
+                return self.insert_op(ops.CastOp(expr, sir.IndexType(), loc)).get_result()
 
-            c1 = self.current_region.add(ops.ConstantOp(1, sir.IndexType(), loc)).get_result()
+            c1 = self.insert_op(ops.ConstantOp(1, sir.IndexType(), loc)).get_result()
             start = as_index(self.visit(slc.lower)[0])
-            stop = self.current_region.add(ops.ArithmeticOp(start, c1, ops.ArithmeticFunction.ADD, loc)).get_result()
+            stop = self.insert_op(ops.ArithmeticOp(start, c1, ops.ArithmeticFunction.ADD, loc)).get_result()
             step = c1
             return start, stop, step
         else:
@@ -46,24 +49,24 @@ class SirOpTransformer(NodeTransformer):
                 step = self.visit(slc.step)[0]
             else:
                 constant_pos_step = True
-                step = self.current_region.add(ops.ConstantOp(1, sir.IndexType(), loc)).get_result()
+                step = self.insert_op(ops.ConstantOp(1, sir.IndexType(), loc)).get_result()
 
             if slc.lower:
                 start = self.visit(slc.lower)[0]
             else:
                 start = (
-                    self.current_region.add(ops.ConstantOp(0, sir.IndexType(), loc)).get_result()
+                    self.insert_op(ops.ConstantOp(0, sir.IndexType(), loc)).get_result()
                     if constant_pos_step
-                    else self.current_region.add(ops.ConstantOp(index_min, sir.IndexType(), loc)).get_result()
+                    else self.insert_op(ops.ConstantOp(index_min, sir.IndexType(), loc)).get_result()
                 )
 
             if slc.upper:
                 stop = self.visit(slc.upper)[0]
             else:
                 stop = (
-                    self.current_region.add(ops.ConstantOp(index_max, sir.IndexType(), loc)).get_result()
+                    self.insert_op(ops.ConstantOp(index_max, sir.IndexType(), loc)).get_result()
                     if constant_pos_step
-                    else self.current_region.add(ops.ConstantOp(index_min, sir.IndexType(), loc)).get_result()
+                    else self.insert_op(ops.ConstantOp(index_min, sir.IndexType(), loc)).get_result()
                 )
 
             return start, stop, step

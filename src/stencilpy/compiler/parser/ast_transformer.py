@@ -1,80 +1,20 @@
 import ctypes
-import textwrap
+import inspect
+import ast
+from typing import Optional, cast, Callable
+from collections.abc import Sequence
 
 from stencilpy.compiler import types as ts
 from stencilpy.error import *
 from stencilpy import concepts
-from .symbol_table import SymbolTable
-
-import inspect
-import ast
+from stencilpy.compiler.symbol_table import SymbolTable
 from stencilpy.compiler import hlast
 from stencilpy.compiler import utility
-
-from typing import Any, Optional, cast, Callable
-from collections.abc import Sequence, Mapping
-
-
-@dataclasses.dataclass
-class FunctionSpecification:
-    mangled_name: str
-    param_types: list[ts.Type]
-    kwparam_types: dict[str, ts.Type]
-    is_public: bool
-    dims: Optional[list[concepts.Dimension]]
+from .utility import FunctionSpecification, get_source_code, add_closure_vars_to_symtable
+from .builtin_transformers import BUILTIN_MAPPING
 
 
-def builtin_shape(transformer: "PythonToHlast", location: concepts.Location, args: Sequence[ast.AST]):
-    assert len(args) == 2
-    field = transformer.visit(args[0])
-    dim = transformer.visit(args[1])
-    if not isinstance(dim, concepts.Dimension):
-        raise CompilationError(location, "the `shape` function expects a dimension for argument 2")
-
-    return hlast.Shape(location, ts.IndexType(), field, dim)
-
-
-def builtin_index(transformer: "PythonToHlast", location: concepts.Location, args: Sequence[ast.AST]):
-    function_def_info: Optional[FunctionSpecification] = None
-    for info in transformer.symtable.infos():
-        if isinstance(info, FunctionSpecification):
-            function_def_info = info
-            break
-    if not function_def_info:
-        raise CompilationError(location, "index expression must be used inside a stencil's body")
-    type_ = ts.NDIndexType(function_def_info.dims)
-    return hlast.Index(location, type_)
-
-
-def builtin_exchange(transformer: "PythonToHlast", location: concepts.Location, args: Sequence[ast.AST]):
-    assert len(args) == 4
-    index = transformer.visit(args[0])
-    value = transformer.visit(args[1])
-    old_dim = transformer.visit(args[2])
-    new_dim = transformer.visit(args[3])
-    type_ = index.type_
-    if isinstance(index.type_, ts.NDIndexType):
-        new_dims = list((set(index.type_.dims) - {old_dim}) | {new_dim})
-        type_ = ts.NDIndexType(sorted(new_dims))
-    return hlast.Exchange(location, type_, index, value, old_dim, new_dim)
-
-
-def builtin_cast(transformer: "PythonToHlast", location: concepts.Location, args: Sequence[ast.AST]):
-    assert len(args) == 2
-    value = transformer.visit(args[0])
-    type_ = transformer.visit(args[1])
-    return hlast.Cast(location, type_, value, type_)
-
-
-_BUILTIN_MAPPING = {
-    "shape": builtin_shape,
-    "index": builtin_index,
-    "exchange": builtin_exchange,
-    "cast": builtin_cast,
-}
-
-
-class PythonToHlast(ast.NodeTransformer):
+class AstTransformer(ast.NodeTransformer):
     file: str
     start_line: int
     start_col: int
@@ -104,6 +44,10 @@ class PythonToHlast(ast.NodeTransformer):
         loc = self.get_ast_loc(node)
         raise UnsupportedLanguageError(loc, node)
 
+    #-----------------------------------
+    # Module structure
+    #-----------------------------------
+
     def visit_FunctionDef(
             self,
             node: ast.FunctionDef,
@@ -125,34 +69,93 @@ class PythonToHlast(ast.NodeTransformer):
 
             statements = [self.visit(statement) for statement in node.body]
 
-            results: list[ts.Type] = []
+            result: ts.Type = ts.VoidType()
             for statement in statements:
                 if isinstance(statement, hlast.Return):
-                    results = [expr.type_ for expr in statement.values]
+                    result = statement.value.type_
 
             if spec.dims is None:
-                type_ = ts.FunctionType(spec.param_types, results)
-                return hlast.Function(loc, type_, name, parameters, results, statements, spec.is_public)
+                type_ = ts.FunctionType(spec.param_types, result)
+                return hlast.Function(loc, type_, name, parameters, result, statements, spec.is_public)
             else:
-                type_ = ts.StencilType(spec.param_types, results, sorted(spec.dims))
-                return hlast.Stencil(loc, type_, name, parameters, results, statements, sorted(spec.dims))
+                type_ = ts.StencilType(spec.param_types, result, sorted(spec.dims))
+                return hlast.Stencil(loc, type_, name, parameters, result, statements, sorted(spec.dims))
 
         return self.symtable.scope(sc, spec)
 
     def visit_Return(self, node: ast.Return) -> hlast.Return:
-        if isinstance(node.value, ast.Tuple):
-            values = [self.visit(value) for value in node.value.elts]
-        else:
-            values = [self.visit(node.value)] if node.value else []
+        value = self.visit(node.value)
         loc = self.get_ast_loc(node)
         type_ = ts.VoidType()
-        return hlast.Return(loc, type_, values)
+        return hlast.Return(loc, type_, value)
 
-    def visit_Constant(self, node: ast.Constant) -> hlast.Constant:
+    def visit_Call(self, node: ast.Call) -> hlast.Expr:
         loc = self.get_ast_loc(node)
-        type_ = ts.infer_object_type(node.value)
-        value = node.value
-        return hlast.Constant(loc, type_, value)
+        builtin = self._visit_call_builtin(node)
+        if builtin: return builtin
+        meta = self._visit_call_meta(node)
+        if meta: return meta
+        apply = self._visit_call_apply(node)
+        if apply: return apply
+        call = self._visit_call_call(node)
+        if call: return call
+        raise CompilationError(loc, "object is not callable")
+
+    def _visit_call_builtin(self, node: ast.Call) -> Optional[hlast.Expr]:
+        loc = self.get_ast_loc(node)
+        if not isinstance(node.func, ast.Name):
+            return None
+        callee = self.symtable.lookup(node.func.id)
+        if not callee:
+            raise UndefinedSymbolError(loc, callee)
+        if not isinstance(callee, hlast.ClosureVariable):
+            return None
+        if not isinstance(callee.value, concepts.Builtin):
+            return None
+        if callee.value.name not in BUILTIN_MAPPING:
+                raise InternalCompilerError(loc, f"builtin function `{callee.value.name}` is not implemented")
+        return BUILTIN_MAPPING[callee.value.name](self, loc, node.args)
+
+    def _visit_call_apply(self, node: ast.Call) -> Optional[hlast.Apply]:
+        loc = self.get_ast_loc(node)
+        node_shape = node.func
+        if not isinstance(node_shape, ast.Subscript):
+            return None
+        callable_ = self.visit(node_shape.value)
+        if not isinstance(callable_, concepts.Stencil):
+            return None
+        sizes: Sequence[hlast.Size] = self._visit_getitem_expr(node_shape.slice)
+        shape = {sz.dimension: sz.size for sz in sizes}
+        dims = sorted(sz.dimension for sz in sizes)
+        args = [self.visit(arg) for arg in node.args]
+        stencil = self.instantiate(callable_.definition, [arg.type_ for arg in args], False, dims)
+        assert isinstance(stencil.type_, ts.StencilType)
+        type_ = ts.FieldType(stencil.type_.result, stencil.type_.dims)
+        return hlast.Apply(loc, type_, stencil.name, shape, args)
+
+    def _visit_call_call(self, node: ast.Call) -> Optional[hlast.Call]:
+        loc = self.get_ast_loc(node)
+        callable_ = self.visit(node.func)
+        if not isinstance(callable_, concepts.Function):
+            return None
+        args = [self.visit(arg) for arg in node.args]
+        func = self.instantiate(callable_.definition, [arg.type_ for arg in args], False)
+        assert isinstance(func.type_, ts.FunctionType)
+        type_ = func.type_.result
+        return hlast.Call(loc, type_, func.name, args)
+
+    def _visit_call_meta(self, node: ast.Call) -> Optional[Any]:
+        try:
+            func = self.visit(node.func)
+            assert isinstance(func, concepts.MetaFunc)
+        except:
+            return None
+        args = [self.visit(arg) for arg in node.args]
+        return func(*args, is_jit=True)
+
+    #-----------------------------------
+    # Symbols
+    #-----------------------------------
 
     def visit_Name(self, node: ast.Name) -> hlast.SymbolRef:
         assert isinstance(node.ctx, ast.Load) # Store contexts are handled explicitly in the parent node.
@@ -165,18 +168,6 @@ class PythonToHlast(ast.NodeTransformer):
         if isinstance(symbol_entry, hlast.ClosureVariable):
             return self._process_closure_value(symbol_entry.value, loc)
         return hlast.SymbolRef(loc, symbol_entry, name)
-
-    def visit_Call(self, node: ast.Call) -> hlast.Expr:
-        loc = self.get_ast_loc(node)
-        builtin = self._visit_call_builtin(node)
-        if builtin: return builtin
-        meta = self._visit_call_meta(node)
-        if meta: return meta
-        apply = self._visit_call_apply(node)
-        if apply: return apply
-        call = self._visit_call_call(node)
-        if call: return call
-        raise CompilationError(loc, "object not callable")
 
     def visit_Assign(self, node: ast.Assign) -> hlast.Assign:
         loc = self.get_ast_loc(node)
@@ -198,31 +189,15 @@ class PythonToHlast(ast.NodeTransformer):
             self.symtable.assign(name, value.type_)
         return hlast.Assign(loc, ts.VoidType(), names, values)
 
-    def visit_Subscript(self, node: ast.Subscript) -> Any:
-        loc = self.get_ast_loc(node)
-        value = self.visit(node.value)
+    #-----------------------------------
+    # Arithmetic & logic
+    #-----------------------------------
 
-        if isinstance(value, concepts.Dimension):
-            slice_expr = self.visit(node.slice)
-            if isinstance(slice_expr, hlast.Expr):
-                return hlast.Size(value, slice_expr)
-            elif isinstance(slice_expr, hlast.Slice):
-                return hlast.Slice(value, slice_expr.lower, slice_expr.upper, slice_expr.step)
-            raise CompilationError(loc, f"dimension cannot be subscripted by object of type `{slice_expr.type_}`")
-        elif isinstance(value.type_, ts.FieldLikeType):
-            slice_exprs: Sequence[hlast.Expr] = self._visit_getitem_expr(node.slice)
-            if all(isinstance(expr, (hlast.Slice, hlast.Size)) for expr in slice_exprs):
-                slices: list[hlast.Slice] = [
-                    self._promote_to_slice(expr) if isinstance(expr, hlast.Size) else expr
-                    for expr in slice_exprs
-                ]
-                return hlast.ExtractSlice(loc, value.type_, value, slices)
-            elif isinstance(slice_exprs[0].type_, ts.NDIndexType):
-                return hlast.Sample(loc, value.type_.element_type, value, slice_exprs[0])
-            expr_types = [str(expr.type_) if hasattr(expr, "type_") else str(type(expr)) for expr in slice_exprs]
-            str_types = ", ".join(expr_types)
-            raise CompilationError(loc, f"field cannot be subscripted by object of type `({str_types})`")
-        raise CompilationError(loc, f"object of type {value.type_} be subscripted")
+    def visit_Constant(self, node: ast.Constant) -> hlast.Constant:
+        loc = self.get_ast_loc(node)
+        type_ = ts.infer_object_type(node.value)
+        value = node.value
+        return hlast.Constant(loc, type_, value)
 
     def visit_BinOp(self, node: ast.BinOp) -> hlast.Expr:
         loc = self.get_ast_loc(node)
@@ -318,6 +293,54 @@ class PythonToHlast(ast.NodeTransformer):
             return hlast.ArithmeticOperation(loc, bool_t, c_bitmask, boolified, hlast.ArithmeticFunction.BIT_XOR)
         raise CompilationError(loc, f"unary operator {type(node.op)} not implemented")
 
+    def visit_Add(self, node: ast.Add) -> Any: return hlast.ArithmeticFunction.ADD
+    def visit_Sub(self, node: ast.Add) -> Any: return hlast.ArithmeticFunction.SUB
+    def visit_Mult(self, node: ast.Add) -> Any: return hlast.ArithmeticFunction.MUL
+    def visit_Div(self, node: ast.Add) -> Any: return hlast.ArithmeticFunction.DIV
+    def visit_Mod(self, node: ast.Add) -> Any: return hlast.ArithmeticFunction.MOD
+    def visit_LShift(self, node: ast.Add) -> Any: return hlast.ArithmeticFunction.BIT_SHL
+    def visit_RShift(self, node: ast.Add) -> Any: return hlast.ArithmeticFunction.BIT_SHR
+    def visit_BitOr(self, node: ast.Add) -> Any: return hlast.ArithmeticFunction.BIT_OR
+    def visit_BitXor(self, node: ast.Add) -> Any: return hlast.ArithmeticFunction.BIT_XOR
+    def visit_BitAnd(self, node: ast.Add) -> Any: return hlast.ArithmeticFunction.BIT_AND
+
+    def visit_Eq(self, node: ast.Eq): return hlast.ComparisonFunction.EQ
+    def visit_NotEq(self, node: ast.NotEq): return hlast.ComparisonFunction.NEQ
+    def visit_Lt(self, node: ast.Lt): return hlast.ComparisonFunction.LT
+    def visit_LtE(self, node: ast.LtE): return hlast.ComparisonFunction.LTE
+    def visit_Gt(self, node: ast.Gt): return hlast.ComparisonFunction.GT
+    def visit_GtE(self, node: ast.GtE): return hlast.ComparisonFunction.GTE
+
+    #-----------------------------------
+    # Misc
+    #-----------------------------------
+
+    def visit_Subscript(self, node: ast.Subscript) -> Any:
+        loc = self.get_ast_loc(node)
+        value = self.visit(node.value)
+
+        if isinstance(value, concepts.Dimension):
+            slice_expr = self.visit(node.slice)
+            if isinstance(slice_expr, hlast.Expr):
+                return hlast.Size(value, slice_expr)
+            elif isinstance(slice_expr, hlast.Slice):
+                return hlast.Slice(value, slice_expr.lower, slice_expr.upper, slice_expr.step)
+            raise CompilationError(loc, f"dimension cannot be subscripted by object of type `{slice_expr.type_}`")
+        elif isinstance(value.type_, ts.FieldLikeType):
+            slice_exprs: Sequence[hlast.Expr] = self._visit_getitem_expr(node.slice)
+            if all(isinstance(expr, (hlast.Slice, hlast.Size)) for expr in slice_exprs):
+                slices: list[hlast.Slice] = [
+                    self._promote_to_slice(expr) if isinstance(expr, hlast.Size) else expr
+                    for expr in slice_exprs
+                ]
+                return hlast.ExtractSlice(loc, value.type_, value, slices)
+            elif isinstance(slice_exprs[0].type_, ts.NDIndexType):
+                return hlast.Sample(loc, value.type_.element_type, value, slice_exprs[0])
+            expr_types = [str(expr.type_) if hasattr(expr, "type_") else str(type(expr)) for expr in slice_exprs]
+            str_types = ", ".join(expr_types)
+            raise CompilationError(loc, f"field cannot be subscripted by object of type `({str_types})`")
+        raise CompilationError(loc, f"object of type {value.type_} be subscripted")
+
     def visit_Slice(self, node: ast.Slice) -> hlast.Slice:
         loc = self.get_ast_loc(node)
         global invalid_dim
@@ -350,78 +373,9 @@ class PythonToHlast(ast.NodeTransformer):
             raise CompilationError(loc, f"object has no attribute {node.attr}")
         raise CompilationError(loc, "expected a name or an attribute of a name")
 
-    def visit_Add(self, node: ast.Add) -> Any: return hlast.ArithmeticFunction.ADD
-    def visit_Sub(self, node: ast.Add) -> Any: return hlast.ArithmeticFunction.SUB
-    def visit_Mult(self, node: ast.Add) -> Any: return hlast.ArithmeticFunction.MUL
-    def visit_Div(self, node: ast.Add) -> Any: return hlast.ArithmeticFunction.DIV
-    def visit_Mod(self, node: ast.Add) -> Any: return hlast.ArithmeticFunction.MOD
-    def visit_LShift(self, node: ast.Add) -> Any: return hlast.ArithmeticFunction.BIT_SHL
-    def visit_RShift(self, node: ast.Add) -> Any: return hlast.ArithmeticFunction.BIT_SHR
-    def visit_BitOr(self, node: ast.Add) -> Any: return hlast.ArithmeticFunction.BIT_OR
-    def visit_BitXor(self, node: ast.Add) -> Any: return hlast.ArithmeticFunction.BIT_XOR
-    def visit_BitAnd(self, node: ast.Add) -> Any: return hlast.ArithmeticFunction.BIT_AND
-
-    def visit_Eq(self, node: ast.Eq): return hlast.ComparisonFunction.EQ
-    def visit_NotEq(self, node: ast.NotEq): return hlast.ComparisonFunction.NEQ
-    def visit_Lt(self, node: ast.Lt): return hlast.ComparisonFunction.LT
-    def visit_LtE(self, node: ast.LtE): return hlast.ComparisonFunction.LTE
-    def visit_Gt(self, node: ast.Gt): return hlast.ComparisonFunction.GT
-    def visit_GtE(self, node: ast.GtE): return hlast.ComparisonFunction.GTE
-
-    def _visit_call_builtin(self, node: ast.Call) -> Optional[hlast.Expr]:
-        loc = self.get_ast_loc(node)
-        if not isinstance(node.func, ast.Name):
-            return None
-        callee = self.symtable.lookup(node.func.id)
-        if not callee:
-            raise UndefinedSymbolError(loc, callee)
-        if not isinstance(callee, hlast.ClosureVariable):
-            return None
-        if not isinstance(callee.value, concepts.Builtin):
-            return None
-        if callee.value.name not in _BUILTIN_MAPPING:
-                raise InternalCompilerError(loc, f"builtin function `{callee.value.name}` is not implemented")
-        return _BUILTIN_MAPPING[callee.value.name](self, loc, node.args)
-
-    def _visit_call_apply(self, node: ast.Call) -> Optional[hlast.Apply]:
-        loc = self.get_ast_loc(node)
-        node_shape = node.func
-        if not isinstance(node_shape, ast.Subscript):
-            return None
-        callable_ = self.visit(node_shape.value)
-        if not isinstance(callable_, concepts.Stencil):
-            return None
-        sizes: Sequence[hlast.Size] = self._visit_getitem_expr(node_shape.slice)
-        shape = {sz.dimension: sz.size for sz in sizes}
-        dims = sorted(sz.dimension for sz in sizes)
-        args = [self.visit(arg) for arg in node.args]
-        stencil = self.instantiate(callable_.definition, [arg.type_ for arg in args], False, dims)
-        assert isinstance(stencil.type_, ts.StencilType)
-        assert len(stencil.type_.results) == 1
-        type_ = ts.FieldType(stencil.type_.results[0], stencil.type_.dims)
-        return hlast.Apply(loc, type_, stencil, shape, args)
-
-    def _visit_call_call(self, node: ast.Call) -> Optional[hlast.Call]:
-        loc = self.get_ast_loc(node)
-        callable_ = self.visit(node.func)
-        if not isinstance(callable_, concepts.Function):
-            return None
-        args = [self.visit(arg) for arg in node.args]
-        func = self.instantiate(callable_.definition, [arg.type_ for arg in args], False)
-        assert isinstance(func.type_, ts.FunctionType)
-        assert len(func.type_.results) == 1
-        type_ = func.type_.results[0]
-        return hlast.Call(loc, type_, func.name, args)
-
-    def _visit_call_meta(self, node: ast.Call) -> Optional[Any]:
-        try:
-            func = self.visit(node.func)
-            assert isinstance(func, concepts.MetaFunc)
-        except:
-            return None
-        args = [self.visit(arg) for arg in node.args]
-        return func(*args, is_jit=True)
-
+    #-----------------------------------
+    # Utilities
+    #-----------------------------------
     def _visit_getitem_expr(self, node: ast.AST):
         if isinstance(node, ast.Tuple):
             return tuple(self.visit(element) for element in node.elts)
@@ -489,50 +443,3 @@ class PythonToHlast(ast.NodeTransformer):
     def _promote_to_slice(self, size: hlast.Size) -> hlast.Slice:
         lower = size.size
         return hlast.Slice(size.dimension, lower, None, None, True)
-
-
-def get_source_code(definition: Callable):
-    file = inspect.getsourcefile(definition)
-    source_lines, start_line = inspect.getsourcelines(definition)
-    start_col = min((len(line) - len(line.lstrip()) for line in source_lines))
-    source_code = ''.join(source_lines)
-    return textwrap.dedent(source_code), file, start_line - 1, start_col
-
-
-def add_closure_vars_to_symtable(symtable: SymbolTable, closure_vars: Mapping[str, Any]):
-    for name, value in closure_vars.items():
-        loc = concepts.Location.unknown()
-        try:
-            type_ = ts.infer_object_type(value)
-        except Exception:
-            type_ = ts.VoidType()
-        symtable.assign(name, hlast.ClosureVariable(loc, type_, name, value))
-
-
-def parse_as_function(
-        definition: Callable,
-        param_types: list[ts.Type],
-        kwparam_types: dict[str, ts.Type],
-        dims: Optional[list[concepts.Dimension]] = None
-) -> hlast.Module:
-    source_code, file, start_line, start_col = get_source_code(definition)
-    python_ast = ast.parse(source_code)
-
-    assert isinstance(python_ast, ast.Module)
-    assert len(python_ast.body) == 1
-    assert isinstance(python_ast.body[0], ast.FunctionDef)
-
-    symtable = SymbolTable()
-    closure_vars = inspect.getclosurevars(definition)
-    add_closure_vars_to_symtable(symtable, closure_vars.globals)
-    add_closure_vars_to_symtable(symtable, closure_vars.nonlocals)
-
-    transformer = PythonToHlast(file, start_line, start_col, symtable)
-    transformer.instantiate(definition, param_types, True, dims)
-
-    callables = [*transformer.instantiations.values()]
-    functions = [f for f in callables if isinstance(f, hlast.Function)]
-    stencils = [f for f in callables if isinstance(f, hlast.Stencil)]
-    module = hlast.Module(hlast.Location.unknown(), ts.VoidType(), functions, stencils)
-
-    return module

@@ -6,33 +6,31 @@ import stencilir as sir
 from stencilpy.compiler import hlast
 from stencilpy.compiler import types as ts
 from stencilpy import utility
-from stencilpy.error import *
 from .utility import (
     as_sir_loc,
     as_sir_type,
     as_sir_arithmetic,
     as_sir_comparison,
-    elementwise_dims_to_arg,
-    get_dim_index,
-    shape_func_name
+    map_elementwise_shape,
+    shape_func_name,
+    flatten,
 )
-import itertools
 from typing import Optional
 
 
-
 class CoreTransformer(SirOpTransformer):
+    # -----------------------------------
+    # Module structure
+    # -----------------------------------
     def visit_Module(self, node: hlast.Module) -> ops.ModuleOp:
         module = ops.ModuleOp()
 
         def sc():
             self.push_region(module.get_body())
-
             for stencil in node.stencils:
                 self.visit(stencil)
             for func in node.functions:
                 self.visit(func)
-
             self.pop_region()
 
         self.symtable.scope(sc, module)
@@ -41,17 +39,14 @@ class CoreTransformer(SirOpTransformer):
     def visit_Function(self, node: hlast.Function) -> list[ops.Value]:
         loc = as_sir_loc(node.location)
         name = node.name
-        parameters = [as_sir_type(p.type_) for p in node.parameters]
-        results = [as_sir_type(r) for r in node.results]
-        outs = [as_sir_type(r) for r in node.results if isinstance(r, ts.FieldType)]
-        function_type = sir.FunctionType([*parameters, *outs], results)
+        function_type = self._get_function_type(node)
 
-        func: ops.FuncOp = self.current_region.add(ops.FuncOp(name, function_type, node.is_public, loc))
+        func: ops.FuncOp = self.insert_op(ops.FuncOp(name, function_type, node.is_public, loc))
         self.symtable.assign(name, func)
 
         def sc():
-            for i, p in enumerate(node.parameters):
-                self.symtable.assign(p.name, [func.get_region_arg(i)])
+            for param, value in zip(node.parameters, self._get_function_args(node, func.get_body())):
+                self.symtable.assign(param.name, value)
             self.push_region(func.get_body())
             for statement in node.body:
                 self.visit(statement)
@@ -63,17 +58,15 @@ class CoreTransformer(SirOpTransformer):
     def visit_Stencil(self, node: hlast.Stencil) -> list[ops.Value]:
         loc = as_sir_loc(node.location)
         name = node.name
-        parameters = [as_sir_type(p.type_) for p in node.parameters]
-        results = [as_sir_type(r) for r in node.results]
-        function_type = sir.FunctionType(parameters, results)
+        function_type = self._get_function_type(node)
         ndims = len(node.dims)
 
-        stencil: ops.StencilOp = self.current_region.add(ops.StencilOp(name, function_type, ndims, False, loc))
+        stencil: ops.StencilOp = self.insert_op(ops.StencilOp(name, function_type, ndims, False, loc))
         self.symtable.assign(name, stencil)
 
         def sc():
-            for i, p in enumerate(node.parameters):
-                self.symtable.assign(p.name, [stencil.get_region_arg(i)])
+            for param, value in zip(node.parameters, self._get_function_args(node, stencil.get_body())):
+                self.symtable.assign(param.name, value)
             self.push_region(stencil.get_body())
             for statement in node.body:
                 self.visit(statement)
@@ -85,43 +78,51 @@ class CoreTransformer(SirOpTransformer):
     def visit_Return(self, node: hlast.Return) -> list[ops.Value]:
         loc = as_sir_loc(node.location)
 
-        def insert(src: ops.Value, dst: ops.Value, ndims: int):
-            c0 = self.current_region.add(ops.ConstantOp(0, sir.IndexType(), loc)).get_result()
-            c1 = self.current_region.add(ops.ConstantOp(1, sir.IndexType(), loc)).get_result()
-            indices = [
-                self.current_region.add(ops.ConstantOp(i, sir.IndexType(), loc)).get_result()
-                for i in range(ndims)
-            ]
-            offsets = [c0]*ndims
-            sizes = [self.current_region.add(ops.DimOp(src, index, loc)).get_result() for index in indices]
-            strides = [c1]*ndims
-            return self.current_region.add(ops.InsertSliceOp(src, dst, offsets, sizes, strides, loc)).get_result()
+        def insert(src: ops.Value, dst: ops.Value, src_type: ts.FieldLikeType):
+            c0 = self.insert_op(ops.ConstantOp(0, sir.IndexType(), loc)).get_result()
+            c1 = self.insert_op(ops.ConstantOp(1, sir.IndexType(), loc)).get_result()
+            offsets = [c0] * len(src_type.dimensions)
+            sizes = self._get_shape_or_empty(src, src_type, loc)
+            strides = [c1] * len(src_type.dimensions)
+            return self.insert_op(ops.InsertSliceOp(src, dst, offsets, sizes, strides, loc)).get_result()
 
-        is_fields = [isinstance(value.type_, ts.FieldType) for value in node.values]
-        ndims = [len(value.type_.dimensions) if isinstance(value.type_, ts.FieldType) else 0 for value in node.values]
-        values = [self.visit(value)[0] for value in node.values]
-        num_outs = sum(1 if is_field else 0 for is_field in is_fields)
-        func_region: Optional[ops.Region] = None
-        for info in self.symtable.infos():
-            if isinstance(info, (ops.FuncOp, ops.StencilOp)):
-                func_region = info.get_body()
-        assert func_region is not None
+        types = [node.value.type_]
+        values = self.visit(node.value)
+        function_body = self._get_enclosing_function_body()
+        assert function_body is not None
 
-        out_idx = len(func_region.get_args()) - num_outs
-        for i in range(len(values)):
-            if is_fields[i]:
-                values[i] = insert(values[i], func_region.get_args()[out_idx], ndims[i])
-                out_idx += 1
+        updated_values: list[ops.Value] = []
+        for idx, type_, value in zip(range(len(values)), reversed(types), reversed(values)):
+            if isinstance(type_, ts.FieldLikeType):
+                new_value = insert(value, function_body.get_args()[-idx - 1], type_)
+            else:
+                new_value = value
+            updated_values.append(new_value)
 
-        self.current_region.add(ops.ReturnOp(values, loc))
+        self.insert_op(ops.ReturnOp(list(reversed(updated_values)), loc))
         return []
 
-    def visit_Constant(self, node: hlast.Constant) -> list[ops.Value]:
+    def visit_Call(self, node: hlast.Call) -> list[ops.Value]:
         loc = as_sir_loc(node.location)
-        type_ = as_sir_type(node.type_)
-        value = node.value
-        return self.current_region.add(ops.ConstantOp(value, type_, loc)).get_results()
+        name = node.name
+        args = flatten(self.visit(arg) for arg in node.args)
+        out_args = self._allocate_output_tensors(node, args)
+        return self.insert_op(ops.CallOp(name, 1, [*args, *out_args], loc)).get_results()
 
+    def visit_Apply(self, node: hlast.Apply) -> list[ops.Value]:
+        loc = as_sir_loc(node.location)
+        inputs = flatten(self.visit(arg) for arg in node.args)
+        shape = [self.visit(size)[0] for dim, size in sorted(node.shape.items(), key=lambda x: x[0])]
+        shape = [self.insert_op(ops.CastOp(size, sir.IndexType(), loc)).get_result() for size in shape]
+        assert isinstance(node.type_, ts.FieldType)
+        dtype = as_sir_type(node.type_.element_type)
+        outputs = [self.insert_op(ops.AllocTensorOp(dtype, shape, loc)).get_result()]
+        static_offsets = [0]*len(node.type_.dimensions)
+        return self.insert_op(ops.ApplyOp(node.stencil, inputs, outputs, [], static_offsets, loc)).get_results()
+
+    # -----------------------------------
+    # Symbols
+    # -----------------------------------
     def visit_SymbolRef(self, node: hlast.SymbolRef) -> list[ops.Value]:
         return self.symtable.lookup(node.name)
 
@@ -130,146 +131,76 @@ class CoreTransformer(SirOpTransformer):
             self.symtable.assign(name, self.visit(value))
         return []
 
-    def visit_Shape(self, node: hlast.Shape) -> list[ops.Value]:
+    #-----------------------------------
+    # Arithmetic & logic
+    # -----------------------------------
+    def visit_Cast(self, node: hlast.Cast) -> list[ops.Value]:
         loc = as_sir_loc(node.location)
-        if not isinstance(node.field.type_, ts.FieldLikeType):
-            raise CompilationError(node.field.location, f"shape expects a field, got {node.field.type_}")
-        try:
-            idx_val = get_dim_index(node.field.type_.dimensions, node.dim)
-        except KeyError:
-            raise MissingDimensionError(node.location, node.field.type_, node.dim)
-        field = self.visit(node.field)[0]
-        idx = self.current_region.add(ops.ConstantOp(idx_val, sir.IndexType(), loc)).get_result()
-        return self.current_region.add(ops.DimOp(field, idx, loc)).get_results()
-
-    def visit_Index(self, node: hlast.Index) -> list[ops.Value]:
-        loc = as_sir_loc(node.location)
-        return self.current_region.add(ops.IndexOp(loc)).get_results()
-
-    def visit_Exchange(self, node: hlast.Exchange) -> list[ops.Value]:
-        assert isinstance(node.index.type_, ts.NDIndexType)
-        loc = as_sir_loc(node.location)
-        index = self.visit(node.index)
         value = self.visit(node.value)
-        old_dim_value = node.index.type_.dims.index(node.old_dim)
-        value_cast = self.current_region.add(ops.CastOp(*value, sir.IndexType(), loc)).get_result()
-        exch = self.current_region.add(ops.ExchangeOp(*index, old_dim_value, value_cast, loc)).get_result()
-        new_dims = copy.deepcopy(node.index.type_.dims)
-        new_dims[old_dim_value] = node.new_dim
-        sorted_new_dims = sorted(new_dims)
-        positions = [sorted_new_dims.index(dim) for dim in new_dims]
-        return self.current_region.add(ops.ProjectOp(exch, positions, loc)).get_results()
+        type_ = as_sir_type(node.type_)
+        return self.insert_op(ops.CastOp(*value, type_, loc)).get_results()
 
-    def visit_Sample(self, node: hlast.Sample) -> list[ops.Value]:
+    def visit_Constant(self, node: hlast.Constant) -> list[ops.Value]:
         loc = as_sir_loc(node.location)
-        assert isinstance(node.field.type_, ts.FieldLikeType)
-        assert isinstance(node.index.type_, ts.NDIndexType)
-        try:
-            projection = [get_dim_index(node.index.type_.dims, dim) for dim in node.field.type_.dimensions]
-            field = self.visit(node.field)[0]
-            index = self.visit(node.index)[0]
-            if sorted(projection) != [range(len(node.field.type_.dimensions))]:
-                index = self.current_region.add(ops.ProjectOp(index, projection, loc)).get_result()
-            return self.current_region.add(ops.SampleOp(field, index, loc)).get_results()
-        except KeyError:
-            raise CompilationError(
-                loc,
-                f"cannot sample field of type {node.field.type_} with index of type {node.index.type_}"
-            )
-
-    def visit_Call(self, node: hlast.Call) -> list[ops.Value]:
-        loc = as_sir_loc(node.location)
-        name = node.name
-        args = list(itertools.chain(*[self.visit(arg) for arg in node.args]))
-        out_args = self.alloc_out_args(node, args)
-        return self.current_region.add(ops.CallOp(name, 1, [*args, *out_args], loc)).get_results()
-
-    def alloc_out_args(self, node: hlast.Call, args: list[ops.Value]) -> list[ops.Value]:
-        if not isinstance(node.type_, ts.FieldType):
-            return []
-        loc = as_sir_loc(node.location)
-        name = shape_func_name(node.name)
-        num_outs = len(node.type_.dimensions)
-        arg_shapes = [self.get_shape(arg, narg.type_, loc) for arg, narg in zip(args, node.args)]
-        arg_shapes_flat = list(itertools.chain(*arg_shapes))
-        out_shape = self.current_region.add(ops.CallOp(name, num_outs, arg_shapes_flat, loc)).get_results()
-        element_type = as_sir_type(node.type_.element_type)
-        return [self.current_region.add(ops.AllocTensorOp(element_type, out_shape, loc)).get_result()]
-
-    def get_shape(self, source: ops.Value, type_: ts.Type, loc: ops.Location):
-        if isinstance(type_, ts.FieldLikeType):
-            ndims = len(type_.dimensions)
-            indices = [
-                self.current_region.add(ops.ConstantOp(i, sir.IndexType(), loc)).get_result()
-                for i in range(ndims)
-            ]
-            shape = [
-                self.current_region.add(ops.DimOp(source, index, loc)).get_result()
-                for index in indices
-            ]
-            return shape
-        return []
-
-    def visit_Apply(self, node: hlast.Apply) -> list[ops.Value]:
-        loc = as_sir_loc(node.location)
-        stencil = self.symtable.lookup(node.stencil.name)
-        assert isinstance(stencil, ops.StencilOp)
-        inputs = [self.visit(arg)[0] for arg in node.args]
-        shape = [self.visit(size)[0] for dim, size in sorted(node.shape.items(), key=lambda x: x[0])]
-        shape = [self.current_region.add(ops.CastOp(size, sir.IndexType(), loc)).get_result() for size in shape]
-        assert isinstance(node.type_, ts.FieldType)
-        dtype = as_sir_type(node.type_.element_type)
-        outputs = [self.current_region.add(ops.AllocTensorOp(dtype, shape, loc)).get_result()]
-        static_offsets = [0]*len(node.type_.dimensions)
-        return self.current_region.add(ops.ApplyOp(stencil, inputs, outputs, [], static_offsets, loc)).get_results()
+        type_ = as_sir_type(node.type_)
+        value = node.value
+        return self.insert_op(ops.ConstantOp(value, type_, loc)).get_results()
 
     def visit_ArithmeticOperation(self, node: hlast.ArithmeticOperation) -> list[ops.Value]:
         loc = as_sir_loc(node.location)
-        lhs = self.visit(node.lhs)[0]
-        rhs = self.visit(node.rhs)[0]
+        lhs = self.visit(node.lhs)
+        rhs = self.visit(node.rhs)
         func = as_sir_arithmetic(node.func)
-        return self.current_region.add(ops.ArithmeticOp(lhs, rhs, func, loc)).get_results()
+        return self.insert_op(ops.ArithmeticOp(*lhs, *rhs, func, loc)).get_results()
 
     def visit_ComparisonOperation(self, node: hlast.ComparisonOperation) -> list[ops.Value]:
         loc = as_sir_loc(node.location)
-        lhs = self.visit(node.lhs)[0]
-        rhs = self.visit(node.rhs)[0]
+        lhs = self.visit(node.lhs)
+        rhs = self.visit(node.rhs)
         func = as_sir_comparison(node.func)
-        return self.current_region.add(ops.ComparisonOp(lhs, rhs, func, loc)).get_results()
+        return self.insert_op(ops.ComparisonOp(*lhs, *rhs, func, loc)).get_results()
+
+    def visit_Min(self, node: hlast.Max) -> list[ops.Value]:
+        loc = as_sir_loc(node.location)
+        lhs = self.visit(node.lhs)
+        rhs = self.visit(node.rhs)
+        return self.insert_op(ops.MinOp(*lhs, *rhs, loc)).get_results()
+
+    def visit_Max(self, node: hlast.Max) -> list[ops.Value]:
+        loc = as_sir_loc(node.location)
+        lhs = self.visit(node.lhs)
+        rhs = self.visit(node.rhs)
+        return self.insert_op(ops.MaxOp(*lhs, *rhs, loc)).get_results()
 
     def visit_ElementwiseOperation(self, node: hlast.ElementwiseOperation) -> list[ops.Value]:
         loc = as_sir_loc(node.location)
 
+        assert isinstance(node.type_, ts.FieldType)
+        dimensions = node.type_.dimensions
+        arg_types = [arg.type_ for arg in node.args]
+        shape_mapping = map_elementwise_shape(dimensions, arg_types)
+
         stencil = self._elementwise_stencil(node)
         args = [self.visit(arg)[0] for arg in node.args]
 
-        assert isinstance(node.type_, ts.FieldType)
-        dims_to_arg = elementwise_dims_to_arg(node.type_.dimensions, [arg.type_ for arg in node.args])
-        dims_to_arg_sorted = sorted(dims_to_arg.items(), key=lambda x: x[0])
-        shape = [
-            self.current_region.add(
-                ops.DimOp(
-                    args[arg_idx],
-                    self.current_region.add(
-                        ops.ConstantOp(
-                            get_dim_index(node.args[arg_idx].type_.dimensions, dim),
-                            sir.IndexType(),
-                        loc)
-                    ).get_result(),
-                    loc
-                )
-            ).get_result() for dim, arg_idx in dims_to_arg_sorted
-        ]
+        shape_args = [args[shape_mapping[dim]] for dim in dimensions]
+        shape_args_types = [node.args[shape_mapping[dim]].type_ for dim in dimensions]
+        shape_arg_vs = [type_.dimensions.index(dim) for dim, type_ in zip(dimensions, shape_args_types)]
+        shape_arg_cs = [self.insert_op(ops.ConstantOp(v, sir.IndexType(), loc)).get_result() for v in shape_arg_vs]
+        shape = [self.insert_op(ops.DimOp(arg, c, loc)).get_result() for arg, c in zip(shape_args, shape_arg_cs)]
 
         dtype = as_sir_type(node.type_.element_type)
-        output = self.current_region.add(ops.AllocTensorOp(dtype, shape, loc)).get_result()
-        return self.current_region.add(ops.ApplyOp(stencil, args, [output], [], [0] * len(shape), loc)).get_results()
+        output = self.insert_op(ops.AllocTensorOp(dtype, shape, loc)).get_result()
+        return self.insert_op(ops.ApplyOp(stencil, args, [output], [], [0] * len(shape), loc)).get_results()
 
+    # -----------------------------------
+    # Control flow
+    # -----------------------------------
     def visit_If(self, node: hlast.If) -> list[ops.Value]:
         loc = as_sir_loc(node.location)
         cond = self.visit(node.cond)[0]
 
-        ifop: ops.IfOp = self.current_region.add(ops.IfOp(cond, 1, loc))
+        ifop: ops.IfOp = self.insert_op(ops.IfOp(cond, 1, loc))
 
         self.push_region(ifop.get_then_region())
         for statement in node.then_body:
@@ -286,61 +217,138 @@ class CoreTransformer(SirOpTransformer):
     def visit_Yield(self, node: hlast.Yield) -> list[ops.Value]:
         loc = as_sir_loc(node.location)
         values = [self.visit(value)[0] for value in node.values]
-        self.current_region.add(ops.YieldOp(values, loc))
+        self.insert_op(ops.YieldOp(values, loc))
         return []
+
+    # -----------------------------------
+    # Tensor
+    # -----------------------------------
+    def visit_Shape(self, node: hlast.Shape) -> list[ops.Value]:
+        loc = as_sir_loc(node.location)
+        assert isinstance(node.field.type_, ts.FieldLikeType)
+        idx_val = node.field.type_.dimensions.index(node.dim)
+        field = self.visit(node.field)[0]
+        idx = self.insert_op(ops.ConstantOp(idx_val, sir.IndexType(), loc)).get_result()
+        return self.insert_op(ops.DimOp(field, idx, loc)).get_results()
 
     def visit_ExtractSlice(self, node: hlast.ExtractSlice) -> list[ops.Value]:
         assert isinstance(node.type_, ts.FieldType)
         loc = as_sir_loc(node.location)
 
         def as_index(expr: ops.Value) -> ops.Value:
-            return self.current_region.add(ops.CastOp(expr, sir.IndexType(), loc)).get_result()
+            return self.insert_op(ops.CastOp(expr, sir.IndexType(), loc)).get_result()
 
-        source = self.visit(node.source)[0]
-        slices = [self.visit_slice(slc) for slc in sorted(node.slices, key=lambda slc: slc.dimension)]
+        source = self.visit(node.source)
+        slices = [self._visit_slice(slc) for slc in sorted(node.slices, key=lambda slc: slc.dimension)]
         starts = [as_index(slc[0]) for slc in slices]
         stops = [as_index(slc[1]) for slc in slices]
         steps = [as_index(slc[2]) for slc in slices]
-        lengths = self.get_shape(source, node.source.type_, loc)
+        lengths = self._get_shape_or_empty(source[0], node.source.type_, loc)
 
-        adjs = [
-            self.current_region.add(ops.CallOp("__adjust_slice", 2, [start, stop, step, length], loc)).get_results()
-            for start, stop, step, length in zip(starts, stops, steps, lengths)
-        ]
-        start_adjs = [adj[0] for adj in adjs]
-        stop_adjs = [adj[1] for adj in adjs]
+        start_adjs: list[ops.Value] = []
+        stop_adjs: list[ops.Value] = []
+        sizes: list[ops.Value] = []
+        for start, stop, step, length in zip(starts, stops, steps, lengths):
+            adj = self.insert_op(ops.CallOp("__adjust_slice", 2, [start, stop, step, length], loc)).get_results()
+            start_adjs.append(adj[0])
+            stop_adjs.append(adj[1])
+            size = self.insert_op(ops.CallOp("__slice_size", 1, [adj[0], adj[1], step], loc)).get_results()[0]
+            sizes.append(size)
 
-        sizes = [
-            self.current_region.add(ops.CallOp("__slice_size", 1, [start, stop, step], loc)).get_results()[0]
-            for start, stop, step in zip(start_adjs, stop_adjs, steps)
-        ]
+        return self.insert_op(ops.ExtractSliceOp(*source, start_adjs, sizes, steps, loc)).get_results()
 
-        return self.current_region.add(ops.ExtractSliceOp(source, start_adjs, sizes, steps, loc)).get_results()
-
-    def visit_Cast(self, node: hlast.Cast) -> list[ops.Value]:
+    # -----------------------------------
+    # Stencil instrinsics
+    # -----------------------------------
+    def visit_Index(self, node: hlast.Index) -> list[ops.Value]:
         loc = as_sir_loc(node.location)
+        return self.insert_op(ops.IndexOp(loc)).get_results()
+
+    def visit_Exchange(self, node: hlast.Exchange) -> list[ops.Value]:
+        assert isinstance(node.index.type_, ts.NDIndexType)
+        loc = as_sir_loc(node.location)
+        index = self.visit(node.index)
         value = self.visit(node.value)
-        type_ = as_sir_type(node.type_)
-        return self.current_region.add(ops.CastOp(*value, type_, loc)).get_results()
+        old_dim_value = node.index.type_.dims.index(node.old_dim)
+        value_cast = self.insert_op(ops.CastOp(*value, sir.IndexType(), loc)).get_result()
+        exch = self.insert_op(ops.ExchangeOp(*index, old_dim_value, value_cast, loc)).get_result()
+        new_dims = copy.deepcopy(node.index.type_.dims)
+        new_dims[old_dim_value] = node.new_dim
+        sorted_new_dims = sorted(new_dims)
+        positions = [sorted_new_dims.index(dim) for dim in new_dims]
+        return self.insert_op(ops.ProjectOp(exch, positions, loc)).get_results()
 
-    def visit_Min(self, node: hlast.Max) -> list[ops.Value]:
+    def visit_Sample(self, node: hlast.Sample) -> list[ops.Value]:
         loc = as_sir_loc(node.location)
-        lhs = self.visit(node.lhs)
-        rhs = self.visit(node.rhs)
-        return self.current_region.add(ops.MinOp(lhs, rhs, loc)).get_results()
+        assert isinstance(node.field.type_, ts.FieldLikeType)
+        assert isinstance(node.index.type_, ts.NDIndexType)
+        projection = [node.index.type_.dims.index(dim) for dim in node.field.type_.dimensions]
+        field = self.visit(node.field)[0]
+        index = self.visit(node.index)[0]
+        if sorted(projection) != [range(len(node.field.type_.dimensions))]:
+            index = self.insert_op(ops.ProjectOp(index, projection, loc)).get_result()
+        return self.insert_op(ops.SampleOp(field, index, loc)).get_results()
 
-    def visit_Max(self, node: hlast.Max) -> list[ops.Value]:
+    # -----------------------------------
+    # Utility functions
+    # -----------------------------------
+    def _get_function_type(self, node: hlast.Function | hlast.Stencil) -> sir.FunctionType:
+        inputs = [as_sir_type(p.type_) for p in node.parameters]
+        outputs = [as_sir_type(node.result)]
+        out_args = []
+        if isinstance(node, hlast.Function):
+            out_args = [as_sir_type(node.result)] if isinstance(node.result, ts.FieldType) else []
+        return sir.FunctionType([*inputs, *out_args], outputs)
+
+    def _get_function_args(self, node: hlast.Function | hlast.Stencil, body: ops.Region) -> list[list[ops.Value]]:
+        values: list[list[ops.Value]] = []
+        region_args = body.get_args()
+        offset = 0
+        for _ in node.parameters:
+            num_args = 1  # Flatten parameters of tuple type
+            values.append(region_args[offset:(offset + num_args)])
+            offset += num_args
+        return values
+
+    def _get_enclosing_function_body(self) -> Optional[ops.Region]:
+        body: Optional[ops.Region] = None
+        for info in self.symtable.infos():
+            if isinstance(info, (ops.FuncOp, ops.StencilOp)):
+                body = info.get_body()
+                break
+        return body
+
+    def _allocate_output_tensors(self, node: hlast.Call, args: list[ops.Value]) -> list[ops.Value]:
+        if not isinstance(node.type_, ts.FieldType):
+            return []
         loc = as_sir_loc(node.location)
-        lhs = self.visit(node.lhs)
-        rhs = self.visit(node.rhs)
-        return self.current_region.add(ops.MaxOp(lhs, rhs, loc)).get_results()
+        name = shape_func_name(node.name)
+        num_outs = len(node.type_.dimensions)
+        arg_shapes = flatten(self._get_shape_or_empty(arg, narg.type_, loc) for arg, narg in zip(args, node.args))
+        out_shape = self.insert_op(ops.CallOp(name, num_outs, arg_shapes, loc)).get_results()
+        element_type = as_sir_type(node.type_.element_type)
+        return [self.insert_op(ops.AllocTensorOp(element_type, out_shape, loc)).get_result()]
+
+    def _get_shape_or_empty(self, source: ops.Value, source_type: ts.Type, loc: ops.Location):
+        if isinstance(source_type, ts.FieldLikeType):
+            ndims = len(source_type.dimensions)
+            indices = [
+                self.insert_op(ops.ConstantOp(i, sir.IndexType(), loc)).get_result()
+                for i in range(ndims)
+            ]
+            shape = [
+                self.insert_op(ops.DimOp(source, index, loc)).get_result()
+                for index in indices
+            ]
+            return shape
+        return []
 
     def _elementwise_stencil(self, node: hlast.ElementwiseOperation):
         assert isinstance(node.type_, ts.FieldType)
         loc = node.location
 
         name = f"__elemwise_sn_{utility.unique_id()}"
-        type_ = ts.StencilType([arg.type_ for arg in node.args], [node.type_.element_type], node.type_.dimensions)
+        type_ = ts.StencilType([arg.type_ for arg in node.args], node.type_.element_type, node.type_.dimensions)
         parameters = [hlast.Parameter(f"__arg{i}", p_type) for i, p_type in enumerate(type_.parameters)]
         arg_refs = [hlast.SymbolRef(loc, p_type, f"__arg{i}") for i, p_type in enumerate(type_.parameters)]
         ndindex_type = ts.NDIndexType(type_.dims)
@@ -350,8 +358,8 @@ class CoreTransformer(SirOpTransformer):
             else arg_ref
             for arg_ref in arg_refs
         ]
-        body = [hlast.Return(loc, type_.results[0], [node.element_expr(samples)])]
-        stencil = hlast.Stencil(loc, type_, name, parameters, type_.results, body, type_.dims)
+        body = [hlast.Return(loc, type_.result, node.element_expr(samples))]
+        stencil = hlast.Stencil(loc, type_, name, parameters, type_.result, body, type_.dims)
 
         module: Optional[ops.ModuleOp] = None
         for info in self.symtable.infos():

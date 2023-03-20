@@ -1,9 +1,11 @@
+import itertools
+
 from stencilpy import concepts
 from stencilpy.compiler import hlast
 from stencilpy.compiler import types as ts
 from stencilir import ops
 import stencilir as sir
-from typing import Sequence
+from typing import Sequence, Iterable, Any
 
 
 def as_sir_loc(loc: hlast.Location) -> ops.Location:
@@ -56,16 +58,9 @@ def as_sir_comparison(func: hlast.ComparisonFunction) -> ops.ComparisonFunction:
     return _MAPPING[func]
 
 
-def get_dim_index(dimensions: Sequence[concepts.Dimension], dim: concepts.Dimension):
-    try:
-        return dimensions.index(dim)
-    except ValueError:
-        raise KeyError(f"dimension {dim} is not associated with field")
-
-
-def elementwise_dims_to_arg(
-        dimensions: list[concepts.Dimension],
-        arg_types: list[ts.Type]
+def map_elementwise_shape(
+        dimensions: Sequence[concepts.Dimension],
+        arg_types: Sequence[ts.Type]
 ) -> dict[concepts.Dimension, int]:
     dims_to_arg: dict[concepts.Dimension, int] = {}
     for dim in dimensions:
@@ -90,3 +85,7 @@ def is_slice_adjustment_trivial(
 
 def shape_func_name(name: str):
     return f"__shapes_{name}"
+
+
+def flatten(values: Iterable[Iterable[Any]]) -> list[Any]:
+    return list(itertools.chain(*values))

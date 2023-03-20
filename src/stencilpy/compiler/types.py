@@ -106,23 +106,23 @@ class VoidType(Type):
 @dataclasses.dataclass
 class FunctionType(Type):
     parameters: list[Type]
-    results: list[Type]
+    result: Type
 
     def __str__(self):
         params = ', '.join(str(p) for p in self.parameters)
-        results = ', '.join(str(r) for r in self.results)
+        results = str(self.result)
         return f"({params}) -> {results}"
 
 
 @dataclasses.dataclass
 class StencilType(Type):
     parameters: list[Type]
-    results: list[Type]
+    result: Type
     dims: list[concepts.Dimension]
 
     def __str__(self):
         params = ', '.join(str(p) for p in self.parameters)
-        results = ', '.join(str(r) for r in self.results)
+        results = str(self.result)
         dims = 'x'.join(str(dim) for dim in self.dims)
         return f"({params}) <{dims}> -> {results}"
 
@@ -148,7 +148,6 @@ def infer_object_type(arg: Any) -> Type:
     else:
         dtype = np.dtype(type(arg))
         return translate_dtype(dtype)
-    raise ValueError(f"cannot infer type for object `{arg}`")
 
 
 def as_numpy_type(type_: Type) -> np_typing.DTypeLike:

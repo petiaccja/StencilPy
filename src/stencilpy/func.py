@@ -67,13 +67,12 @@ def _allocate_results(
         shapes = (shapes,)
     fields = []
     start = 0
-    for result in func_signature.results:
-        if isinstance(result, ts.FieldType):
-            end = start + len(result.dimensions)
-            shape = shapes[start:end]
-            dtype = ts.as_numpy_type(result.element_type)
-            fields.append(storage.Field(result.dimensions, np.empty(shape, dtype)))
-            start = end
+    if isinstance(func_signature.result, ts.FieldType):
+        end = start + len(func_signature.result.dimensions)
+        shape = shapes[start:end]
+        dtype = ts.as_numpy_type(func_signature.result.element_type)
+        fields.append(storage.Field(func_signature.result.dimensions, np.empty(shape, dtype)))
+        start = end
     return tuple(fields)
 
 
@@ -123,7 +122,7 @@ class JitFunction:
         return _match_results_to_outs(results, out_args)
 
     def parse(self, arg_types: list[sir.Type], kwarg_types: dict[str, sir.Type]) -> hlast.Module:
-        return parser.parse_as_function(self.definition, arg_types, kwarg_types)
+        return parser.function_to_hlast(self.definition, arg_types, kwarg_types)
 
 
 @dataclasses.dataclass
