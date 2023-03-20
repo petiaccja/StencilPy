@@ -1,3 +1,5 @@
+import copy
+
 from .basic_transformer import SirOpTransformer
 from stencilir import ops
 import stencilir as sir
@@ -130,7 +132,7 @@ class CoreTransformer(SirOpTransformer):
 
     def visit_Shape(self, node: hlast.Shape) -> list[ops.Value]:
         loc = as_sir_loc(node.location)
-        if not isinstance(node.field.type_, ts.FieldType):
+        if not isinstance(node.field.type_, ts.FieldLikeType):
             raise CompilationError(node.field.location, f"shape expects a field, got {node.field.type_}")
         try:
             idx_val = get_dim_index(node.field.type_.dimensions, node.dim)
@@ -143,6 +145,20 @@ class CoreTransformer(SirOpTransformer):
     def visit_Index(self, node: hlast.Index) -> list[ops.Value]:
         loc = as_sir_loc(node.location)
         return self.current_region.add(ops.IndexOp(loc)).get_results()
+
+    def visit_Exchange(self, node: hlast.Exchange) -> list[ops.Value]:
+        assert isinstance(node.index.type_, ts.NDIndexType)
+        loc = as_sir_loc(node.location)
+        index = self.visit(node.index)
+        value = self.visit(node.value)
+        old_dim_value = node.index.type_.dims.index(node.old_dim)
+        value_cast = self.current_region.add(ops.CastOp(*value, sir.IndexType(), loc)).get_result()
+        exch = self.current_region.add(ops.ExchangeOp(*index, old_dim_value, value_cast, loc)).get_result()
+        new_dims = copy.deepcopy(node.index.type_.dims)
+        new_dims[old_dim_value] = node.new_dim
+        sorted_new_dims = sorted(new_dims)
+        positions = [sorted_new_dims.index(dim) for dim in new_dims]
+        return self.current_region.add(ops.ProjectOp(exch, positions, loc)).get_results()
 
     def visit_Sample(self, node: hlast.Sample) -> list[ops.Value]:
         loc = as_sir_loc(node.location)
@@ -181,7 +197,7 @@ class CoreTransformer(SirOpTransformer):
         return [self.current_region.add(ops.AllocTensorOp(element_type, out_shape, loc)).get_result()]
 
     def get_shape(self, source: ops.Value, type_: ts.Type, loc: ops.Location):
-        if isinstance(type_, ts.FieldType):
+        if isinstance(type_, ts.FieldLikeType):
             ndims = len(type_.dimensions)
             indices = [
                 self.current_region.add(ops.ConstantOp(i, sir.IndexType(), loc)).get_result()

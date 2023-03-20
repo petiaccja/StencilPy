@@ -37,6 +37,10 @@ class FieldLike:
         self.sorted_dimensions = [dim for dim, _ in sorted_dimensions]
         self.data = np.moveaxis(data, range(data.ndim), [index for _, index in sorted_dimensions])
 
+    @property
+    def shape(self):
+        return {dim: size for dim, size in zip(self.sorted_dimensions, self.data.shape)}
+
     def _sample(self, slices: concepts.Index):
         raw_idx = tuple(slices.values[dim] for dim in self.sorted_dimensions)
         return self.data[raw_idx]

@@ -6,7 +6,6 @@ import numpy as np
 
 from stencilpy import storage
 from stencilpy import concepts
-from stencilpy import lib
 from stencilpy.compiler import hlast
 from stencilpy.compiler import parser
 from stencilpy.compiler import utility
@@ -37,8 +36,12 @@ def _translate_arg(arg: Any) -> Any:
     return arg
 
 
+_index: Optional[concepts.Index] = None
+
+
 def _set_index(idx: concepts.Index):
-    lib._index = idx
+    global _index
+    _index = idx
 
 
 def _get_signature(hast_module: hlast.Module, func_name: str) -> ts.FunctionType:
@@ -56,7 +59,7 @@ def _allocate_results(
         args: Sequence[Any]
 ):
     shape_func_name = sir_conversion.shape_func_name(func_name)
-    args_and_shapes = [arg.data.shape if isinstance(arg, storage.Field) else [arg] for arg in args]
+    args_and_shapes = [arg.data.shape if isinstance(arg, storage.FieldLike) else [arg] for arg in args]
     args_and_shapes = list(itertools.chain(*args_and_shapes))
     translated_args = [_translate_arg(arg) for arg in args_and_shapes]
     shapes = module.invoke(shape_func_name, *translated_args)

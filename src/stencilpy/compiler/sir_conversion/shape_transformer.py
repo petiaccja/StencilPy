@@ -35,7 +35,7 @@ class ShapeTransformer(SirOpTransformer):
 
         parameters = []
         for param in node.parameters:
-            if isinstance(param.type_, ts.FieldType):
+            if isinstance(param.type_, ts.FieldLikeType):
                 ndims = len(param.type_.dimensions)
                 for _ in range(ndims):
                     parameters.append(sir.IndexType())
@@ -44,7 +44,7 @@ class ShapeTransformer(SirOpTransformer):
 
         results = []
         for result in node.results:
-            if isinstance(result, ts.FieldType):
+            if isinstance(result, ts.FieldLikeType):
                 ndims = len(result.dimensions)
                 for _ in range(ndims):
                     results.append(sir.IndexType())
@@ -60,7 +60,7 @@ class ShapeTransformer(SirOpTransformer):
 
             arg_idx = 0
             for param in node.parameters:
-                if isinstance(param.type_, ts.FieldType):
+                if isinstance(param.type_, ts.FieldLikeType):
                     ndims = len(param.type_.dimensions)
                     shape = self.current_region.get_args()[arg_idx:(arg_idx + ndims)]
                     self.symtable.assign(param.name, shape)
@@ -79,7 +79,7 @@ class ShapeTransformer(SirOpTransformer):
 
     def visit_Return(self, node: hlast.Return) -> list[ops.Value]:
         loc = as_sir_loc(node.location)
-        values = [self.visit(value) for value in node.values if isinstance(value.type_, ts.FieldType)]
+        values = [self.visit(value) for value in node.values if isinstance(value.type_, ts.FieldLikeType)]
         flattened = list(itertools.chain(*values))
         converted = [self.current_region.add(ops.CastOp(v, sir.IndexType(), loc)).get_result() for v in flattened]
         self.current_region.add(ops.ReturnOp(converted, loc))
@@ -88,7 +88,7 @@ class ShapeTransformer(SirOpTransformer):
     def visit_Call(self, node: hlast.Call) -> list[ops.Value]:
         loc = as_sir_loc(node.location)
         name = shape_func_name(node.name)
-        num_outs = len(node.type_.dimensions) if isinstance(node.type_, ts.FieldType) else 0
+        num_outs = len(node.type_.dimensions) if isinstance(node.type_, ts.FieldLikeType) else 0
         args = list(itertools.chain(*[self.visit(arg) for arg in node.args]))
         return self.current_region.add(ops.CallOp(name, num_outs, args, loc)).get_results()
 
@@ -107,9 +107,9 @@ class ShapeTransformer(SirOpTransformer):
         return []
 
     def visit_Shape(self, node: hlast.Shape) -> list[ops.Value]:
-        assert isinstance(node.type_, ts.FieldType)
+        assert isinstance(node.field.type_, ts.FieldLikeType)
         shape = self.visit(node.field)
-        index = get_dim_index(node.type_.dimensions, node.dim)
+        index = get_dim_index(node.field.type_.dimensions, node.dim)
         return [shape[index]]
 
     def visit_Apply(self, node: hlast.Apply) -> list[ops.Value]:
@@ -150,7 +150,7 @@ class ShapeTransformer(SirOpTransformer):
     def visit_If(self, node: hlast.If) -> list[ops.Value]:
         loc = as_sir_loc(node.location)
 
-        nresults = len(node.type_.dimensions) if isinstance(node.type_, ts.FieldType) else 1
+        nresults = len(node.type_.dimensions) if isinstance(node.type_, ts.FieldLikeType) else 1
 
         cond = self.visit(node.cond)[0]
         ifop: ops.IfOp = self.current_region.add(ops.IfOp(cond, nresults, loc))
@@ -169,7 +169,7 @@ class ShapeTransformer(SirOpTransformer):
 
     def visit_Yield(self, node: hlast.Yield) -> list[ops.Value]:
         loc = as_sir_loc(node.location)
-        values = [self.visit(value) for value in node.values if isinstance(value.type_, ts.FieldType)]
+        values = [self.visit(value) for value in node.values if isinstance(value.type_, ts.FieldLikeType)]
         flattened = list(itertools.chain(*values))
         self.current_region.add(ops.YieldOp(flattened, loc))
         return []

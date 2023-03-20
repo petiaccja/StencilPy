@@ -3,6 +3,7 @@ from stencilpy.compiler import hlast
 from stencilpy.compiler import types as ts
 from stencilir import ops
 import stencilir as sir
+from typing import Sequence
 
 
 def as_sir_loc(loc: hlast.Location) -> ops.Location:
@@ -55,7 +56,7 @@ def as_sir_comparison(func: hlast.ComparisonFunction) -> ops.ComparisonFunction:
     return _MAPPING[func]
 
 
-def get_dim_index(dimensions: list[concepts.Dimension], dim: concepts.Dimension):
+def get_dim_index(dimensions: Sequence[concepts.Dimension], dim: concepts.Dimension):
     try:
         return dimensions.index(dim)
     except ValueError:

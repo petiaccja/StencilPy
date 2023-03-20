@@ -148,6 +148,14 @@ class Index(Expr):
 
 
 @dataclasses.dataclass
+class Exchange(Expr):
+    index: Expr
+    value: Expr
+    old_dim: Dimension
+    new_dim: Dimension
+
+
+@dataclasses.dataclass
 class Sample(Expr):
     field: Expr
     index: Expr
@@ -210,6 +218,11 @@ class Block(Expr):
 @dataclasses.dataclass
 class ClosureVariable(Node):
     name: str
+    value: Any
+
+
+@dataclasses.dataclass
+class MetaConstant(Node):
     value: Any
 
 

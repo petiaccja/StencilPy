@@ -24,7 +24,7 @@ class FunctionSpecification:
     dims: Optional[list[concepts.Dimension]]
 
 
-def builtin_shape(transformer: Any, location: concepts.Location, args: Sequence[ast.AST]):
+def builtin_shape(transformer: "PythonToHlast", location: concepts.Location, args: Sequence[ast.AST]):
     assert len(args) == 2
     field = transformer.visit(args[0])
     dim = transformer.visit(args[1])
@@ -34,7 +34,7 @@ def builtin_shape(transformer: Any, location: concepts.Location, args: Sequence[
     return hlast.Shape(location, ts.IndexType(), field, dim)
 
 
-def builtin_index(transformer: "PythonToHlast", location: concepts.Location, *args):
+def builtin_index(transformer: "PythonToHlast", location: concepts.Location, args: Sequence[ast.AST]):
     function_def_info: Optional[FunctionSpecification] = None
     for info in transformer.symtable.infos():
         if isinstance(info, FunctionSpecification):
@@ -46,7 +46,20 @@ def builtin_index(transformer: "PythonToHlast", location: concepts.Location, *ar
     return hlast.Index(location, type_)
 
 
-def builtin_cast(transformer: Any, location: concepts.Location, args: Sequence[ast.AST]):
+def builtin_exchange(transformer: "PythonToHlast", location: concepts.Location, args: Sequence[ast.AST]):
+    assert len(args) == 4
+    index = transformer.visit(args[0])
+    value = transformer.visit(args[1])
+    old_dim = transformer.visit(args[2])
+    new_dim = transformer.visit(args[3])
+    type_ = index.type_
+    if isinstance(index.type_, ts.NDIndexType):
+        new_dims = list((set(index.type_.dims) - {old_dim}) | {new_dim})
+        type_ = ts.NDIndexType(sorted(new_dims))
+    return hlast.Exchange(location, type_, index, value, old_dim, new_dim)
+
+
+def builtin_cast(transformer: "PythonToHlast", location: concepts.Location, args: Sequence[ast.AST]):
     assert len(args) == 2
     value = transformer.visit(args[0])
     type_ = transformer.visit(args[1])
@@ -56,6 +69,7 @@ def builtin_cast(transformer: Any, location: concepts.Location, args: Sequence[a
 _BUILTIN_MAPPING = {
     "shape": builtin_shape,
     "index": builtin_index,
+    "exchange": builtin_exchange,
     "cast": builtin_cast,
 }
 
@@ -403,15 +417,16 @@ class PythonToHlast(ast.NodeTransformer):
         try:
             func = self.visit(node.func)
             assert isinstance(func, concepts.MetaFunc)
-            args = [self.visit(arg) for arg in node.args]
-            return func(*args, is_jit=True)
         except:
             return None
+        args = [self.visit(arg) for arg in node.args]
+        return func(*args, is_jit=True)
 
     def _visit_getitem_expr(self, node: ast.AST):
         if isinstance(node, ast.Tuple):
-            return [self.visit(element) for element in node.elts]
-        return [self.visit(node)]
+            return tuple(self.visit(element) for element in node.elts)
+        slices = self.visit(node)
+        return slices if isinstance(slices, tuple) else (slices,)
 
     def instantiate(
             self,
