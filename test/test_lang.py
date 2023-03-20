@@ -1,5 +1,5 @@
 import numpy as np
-from stencilpy.storage import Field
+from stencilpy.storage import Field, Connectivity
 from stencilpy.concepts import Dimension
 from stencilpy.func import func, stencil
 from stencilpy.lib import index
@@ -7,6 +7,7 @@ from .config import use_jit
 
 TDim = Dimension()
 UDim = Dimension()
+LDim = Dimension()
 
 
 def test_func_return_scalar(use_jit):
@@ -52,7 +53,7 @@ def test_assign(use_jit):
     assert np.allclose(r.data, a.data)
 
 
-def test_sample(use_jit):
+def test_sample_field(use_jit):
     @stencil
     def sn(a: Field) -> np.float32:
         return a[index()]
@@ -62,6 +63,20 @@ def test_sample(use_jit):
         return sn[UDim[su], TDim[st]](a)
 
     a = Field([TDim, UDim], np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float32))
+    r = fn(a, 2, 3, jit=use_jit)
+    assert np.allclose(r.data, a.data)
+
+
+def test_sample_connectivity(use_jit):
+    @stencil
+    def sn(a: Connectivity) -> np.int64:
+        return a[index()]
+
+    @func
+    def fn(a: Connectivity, so: int, se: int) -> Field:
+        return sn[TDim[so], LDim[se]](a)
+
+    a = Connectivity(TDim, UDim, LDim, np.array([[1, 2, 3], [4, 5, 6]], dtype=np.int64))
     r = fn(a, 2, 3, jit=use_jit)
     assert np.allclose(r.data, a.data)
 

@@ -14,6 +14,10 @@ def format_type_short(type_: ts.Type):
         element_type = format_type_short(type_.element_type)
         dims = [str(dim.id) for dim in type_.dimensions]
         return f"F{element_type}x{'x'.join(dims)}"
+    if isinstance(type_, ts.ConnectivityType):
+        element_type = format_type_short(type_.element_type)
+        dims = [str(dim.id) for dim in type_.dimensions]
+        return f"C{element_type}x{'x'.join(dims)}"
     raise NotImplementedError()
 
 

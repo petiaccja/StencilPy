@@ -16,7 +16,7 @@ def as_sir_type(type_: ts.Type) -> sir.Type:
         return sir.IntegerType(type_.width, type_.signed)
     elif isinstance(type_, ts.FloatType):
         return sir.FloatType(type_.width)
-    elif isinstance(type_, ts.FieldType):
+    elif isinstance(type_, ts.FieldLikeType):
         return sir.FieldType(as_sir_type(type_.element_type), len(type_.dimensions))
     elif isinstance(type_, ts.FunctionType):
         return sir.FunctionType(

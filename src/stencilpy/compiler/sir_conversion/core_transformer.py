@@ -146,7 +146,7 @@ class CoreTransformer(SirOpTransformer):
 
     def visit_Sample(self, node: hlast.Sample) -> list[ops.Value]:
         loc = as_sir_loc(node.location)
-        assert isinstance(node.field.type_, ts.FieldType)
+        assert isinstance(node.field.type_, ts.FieldLikeType)
         assert isinstance(node.index.type_, ts.NDIndexType)
         try:
             projection = [get_dim_index(node.index.type_.dims, dim) for dim in node.field.type_.dimensions]

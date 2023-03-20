@@ -32,7 +32,7 @@ def _set_field_item(field_: storage.Field, idx: concepts.Index, value: Any):
 
 
 def _translate_arg(arg: Any) -> Any:
-    if isinstance(arg, storage.Field):
+    if isinstance(arg, storage.FieldLike):
         return memoryview(arg.data)
     return arg
 
@@ -53,12 +53,13 @@ def _allocate_results(
         func_name: str,
         func_signature: ts.FunctionType,
         module: sir.CompiledModule,
-        translated_args: list[Any]
+        args: Sequence[Any]
 ):
     shape_func_name = sir_conversion.shape_func_name(func_name)
-    shape_args = [arg.shape if isinstance(arg, memoryview) else [arg] for arg in translated_args]
-    shape_args = list(itertools.chain(*shape_args))
-    shapes = module.invoke(shape_func_name, *shape_args)
+    args_and_shapes = [arg.data.shape if isinstance(arg, storage.Field) else [arg] for arg in args]
+    args_and_shapes = list(itertools.chain(*args_and_shapes))
+    translated_args = [_translate_arg(arg) for arg in args_and_shapes]
+    shapes = module.invoke(shape_func_name, *translated_args)
     if not isinstance(shapes, tuple):
         shapes = (shapes,)
     fields = []
@@ -113,7 +114,7 @@ class JitFunction:
         compiled_module.compile(True)
         ir = compiled_module.get_stage_results()
         translated_args = [_translate_arg(arg) for arg in args]
-        out_args = _allocate_results(func_name, signature, compiled_module, translated_args)
+        out_args = _allocate_results(func_name, signature, compiled_module, args)
         translated_out_args = [_translate_arg(arg) for arg in out_args]
         results = compiled_module.invoke(func_name, *translated_args, *translated_out_args)
         return _match_results_to_outs(results, out_args)

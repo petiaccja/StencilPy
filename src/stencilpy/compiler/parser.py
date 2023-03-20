@@ -195,7 +195,7 @@ class PythonToHlast(ast.NodeTransformer):
             elif isinstance(slice_expr, hlast.Slice):
                 return hlast.Slice(value, slice_expr.lower, slice_expr.upper, slice_expr.step)
             raise CompilationError(loc, f"dimension cannot be subscripted by object of type `{slice_expr.type_}`")
-        elif isinstance(value.type_, ts.FieldType):
+        elif isinstance(value.type_, ts.FieldLikeType):
             slice_exprs: Sequence[hlast.Expr] = self._visit_getitem_expr(node.slice)
             if all(isinstance(expr, (hlast.Slice, hlast.Size)) for expr in slice_exprs):
                 slices: list[hlast.Slice] = [
@@ -208,6 +208,7 @@ class PythonToHlast(ast.NodeTransformer):
             expr_types = [str(expr.type_) if hasattr(expr, "type_") else str(type(expr)) for expr in slice_exprs]
             str_types = ", ".join(expr_types)
             raise CompilationError(loc, f"field cannot be subscripted by object of type `({str_types})`")
+        raise CompilationError(loc, f"object of type {value.type_} be subscripted")
 
     def visit_BinOp(self, node: ast.BinOp) -> hlast.Expr:
         loc = self.get_ast_loc(node)

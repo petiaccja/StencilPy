@@ -1,9 +1,10 @@
+import abc
 import ctypes
 import dataclasses
 
 from stencilpy import concepts
 from stencilpy import storage
-from typing import Any
+from typing import Any, Sequence
 import numpy as np
 import numpy.typing as np_typing
 
@@ -46,14 +47,54 @@ class NDIndexType(Type):
         return f"index<{spec}>"
 
 
+class FieldLikeType(Type):
+    @property
+    @abc.abstractmethod
+    def element_type(self) -> Type:
+        ...
+
+    @property
+    @abc.abstractmethod
+    def dimensions(self) -> Sequence[concepts.Dimension]:
+        ...
+
+
 @dataclasses.dataclass
-class FieldType(Type):
-    element_type: Type
-    dimensions: list[concepts.Dimension]
+class FieldType(FieldLikeType):
+    _element_type: Type
+    _dimensions: list[concepts.Dimension]
+
+    @property
+    def element_type(self) -> Type:
+        return self._element_type
+
+    @property
+    def dimensions(self) -> Sequence[concepts.Dimension]:
+        return self._dimensions
 
     def __str__(self):
         spec = "x".join(str(v) for v in [self.element_type, *self.dimensions])
         return f"field<{spec}>"
+
+
+@dataclasses.dataclass
+class ConnectivityType(FieldLikeType):
+    _element_type: Type
+    origin_dimension: concepts.Dimension
+    neighbor_dimension: concepts.Dimension
+    element_dimension: concepts.Dimension
+
+    @property
+    def element_type(self) -> Type:
+        return self._element_type
+
+    @property
+    def dimensions(self) -> Sequence[concepts.Dimension]:
+        return sorted([self.origin_dimension, self.element_dimension])
+
+    def __str__(self):
+        return f"connectivity<{str(self.element_type)}x{str(self.origin_dimension)}" \
+               f"to{str(self.neighbor_dimension)}x{str(self.element_dimension)}>"
 
 
 @dataclasses.dataclass
@@ -101,6 +142,9 @@ def infer_object_type(arg: Any) -> Type:
         element_type = translate_dtype(arg.data.dtype)
         dims = arg.sorted_dimensions
         return FieldType(element_type, dims)
+    elif isinstance(arg, storage.Connectivity):
+        element_type = translate_dtype(arg.data.dtype)
+        return ConnectivityType(element_type, arg.origin_dimension, arg.neighbor_dimension, arg.element_dimension)
     else:
         dtype = np.dtype(type(arg))
         return translate_dtype(dtype)
