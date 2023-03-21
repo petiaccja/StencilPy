@@ -1,4 +1,3 @@
-import ctypes
 import inspect
 import ast
 from typing import Optional, cast, Callable
@@ -73,6 +72,7 @@ class AstTransformer(ast.NodeTransformer):
             for statement in statements:
                 if isinstance(statement, hlast.Return):
                     result = statement.value.type_
+                    break
 
             if spec.dims is None:
                 type_ = ts.FunctionType(spec.param_types, result)
@@ -342,12 +342,9 @@ class AstTransformer(ast.NodeTransformer):
         raise CompilationError(loc, f"object of type {value.type_} be subscripted")
 
     def visit_Slice(self, node: ast.Slice) -> hlast.Slice:
-        loc = self.get_ast_loc(node)
         global invalid_dim
         if not "invalid_dim" in globals():
             invalid_dim = concepts.Dimension("INVALID_DIM")
-        index_max = 2**(8*ctypes.sizeof(ctypes.c_void_p) - 1) - 1
-        assert isinstance(index_max, int)
         lower = self.visit(node.lower) if node.lower else None
         upper = self.visit(node.upper) if node.upper else None
         step = self.visit(node.step) if node.step else None

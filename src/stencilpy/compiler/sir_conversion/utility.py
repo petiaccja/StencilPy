@@ -5,7 +5,7 @@ from stencilpy.compiler import hlast
 from stencilpy.compiler import types as ts
 from stencilir import ops
 import stencilir as sir
-from typing import Sequence, Iterable, Any
+from typing import Sequence, Iterable, Any, Optional
 
 
 def as_sir_loc(loc: hlast.Location) -> ops.Location:
@@ -75,11 +75,11 @@ def map_elementwise_shape(
 
 
 def is_slice_adjustment_trivial(
-        start: hlast.Expr,
-        step: hlast.Expr,
+        start: Optional[hlast.Expr],
+        step: Optional[hlast.Expr],
 ) -> bool:
-    is_start_trivial = isinstance(start, hlast.Constant) and start.value >= 0
-    is_step_trivial = isinstance(step, hlast.Constant) and step.value > 0
+    is_step_trivial = not step or (isinstance(step, hlast.Constant) and step.value > 0)
+    is_start_trivial = (is_step_trivial and not start) or (isinstance(start, hlast.Constant) and start.value >= 0)
     return is_start_trivial and is_step_trivial
 
 

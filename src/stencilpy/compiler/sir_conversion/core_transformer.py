@@ -11,6 +11,7 @@ from .utility import (
     as_sir_type,
     as_sir_arithmetic,
     as_sir_comparison,
+    is_slice_adjustment_trivial,
     map_elementwise_shape,
     shape_func_name,
     flatten,
@@ -238,8 +239,10 @@ class CoreTransformer(SirOpTransformer):
         def as_index(expr: ops.Value) -> ops.Value:
             return self.insert_op(ops.CastOp(expr, sir.IndexType(), loc)).get_result()
 
+        sorted_slices = sorted(node.slices, key=lambda slc: slc.dimension)
         source = self.visit(node.source)
-        slices = [self._visit_slice(slc) for slc in sorted(node.slices, key=lambda slc: slc.dimension)]
+        slices = [self._visit_slice(slc) for slc in sorted_slices]
+        trivials = [is_slice_adjustment_trivial(slc.lower, slc.step) for slc in sorted_slices]
         starts = [as_index(slc[0]) for slc in slices]
         stops = [as_index(slc[1]) for slc in slices]
         steps = [as_index(slc[2]) for slc in slices]
@@ -248,8 +251,9 @@ class CoreTransformer(SirOpTransformer):
         start_adjs: list[ops.Value] = []
         stop_adjs: list[ops.Value] = []
         sizes: list[ops.Value] = []
-        for start, stop, step, length in zip(starts, stops, steps, lengths):
-            adj = self.insert_op(ops.CallOp("__adjust_slice", 2, [start, stop, step, length], loc)).get_results()
+        for start, stop, step, length, trivial in zip(starts, stops, steps, lengths, trivials):
+            adjust_func = "__adjust_slice_trivial" if trivial else "__adjust_slice"
+            adj = self.insert_op(ops.CallOp(adjust_func, 2, [start, stop, step, length], loc)).get_results()
             start_adjs.append(adj[0])
             stop_adjs.append(adj[1])
             size = self.insert_op(ops.CallOp("__slice_size", 1, [adj[0], adj[1], step], loc)).get_results()[0]
