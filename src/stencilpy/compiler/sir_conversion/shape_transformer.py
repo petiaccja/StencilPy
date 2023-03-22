@@ -205,3 +205,9 @@ class ShapeTransformer(SirOpTransformer):
             sizes.append(size)
 
         return sizes
+
+    # -----------------------------------
+    # Special
+    # -----------------------------------
+    def visit_Noop(self, _: hlast.Noop) -> list[ops.Value]:
+        return []

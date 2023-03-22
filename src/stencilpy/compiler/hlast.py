@@ -258,3 +258,8 @@ class Sample(Expr):
 class ClosureVariable(Node):
     name: str
     value: Any
+
+
+@dataclasses.dataclass
+class Noop(Statement):
+    pass

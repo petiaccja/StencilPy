@@ -64,7 +64,7 @@ class AstTransformer(ast.NodeTransformer):
                 for name, type_ in zip(node.args.args, spec.param_types)
             ]
             for param in parameters:
-                self.symtable.assign(param.name, param.type_)
+                self.symtable.assign(param.name, param)
 
             statements = [self.visit(statement) for statement in node.body]
 
@@ -162,32 +162,41 @@ class AstTransformer(ast.NodeTransformer):
 
         loc = self.get_ast_loc(node)
         name = node.id
-        symbol_entry = self.symtable.lookup(name)
-        if not symbol_entry:
+        entry = self.symtable.lookup(name)
+        if not entry:
             raise UndefinedSymbolError(loc, name)
-        if isinstance(symbol_entry, hlast.ClosureVariable):
-            return self._process_closure_value(symbol_entry.value, loc)
-        return hlast.SymbolRef(loc, symbol_entry, name)
+        if isinstance(entry, hlast.ClosureVariable):
+            return self._process_closure_value(entry.value, loc)
+        if isinstance(entry, hlast.Node):
+            return hlast.SymbolRef(loc, entry.type_, name)
+        return entry
 
-    def visit_Assign(self, node: ast.Assign) -> hlast.Assign:
+    def visit_Assign(self, node: ast.Assign) -> hlast.Statement:
         loc = self.get_ast_loc(node)
-        values = [self.visit(node.value)]
+        value = self.visit(node.value)
         if not all(isinstance(target, ast.Name) for target in node.targets):
             raise CompilationError(loc, "only assigning to simple variables is supported")
-        names = [target.id for target in node.targets]
-        for name, value in zip(names, values):
-            self.symtable.assign(name, value.type_)
-        return hlast.Assign(loc, ts.VoidType(), names, values)
 
-    def visit_AnnAssign(self, node: ast.AnnAssign) -> hlast.Assign:
+        names = [target.id for target in node.targets]
+        self.symtable.assign(names[0], value)
+        if isinstance(value, hlast.Node):
+            return hlast.Assign(loc, ts.void_t, names, [value])
+        else:
+            return hlast.Noop(loc, ts.void_t)
+        
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> hlast.Statement:
         loc = self.get_ast_loc(node)
-        values = [self.visit(node.value)]
+        value = self.visit(node.value)
         if not isinstance(node.target, ast.Name):
             raise CompilationError(loc, "only assigning to simple variables is supported")
-        names = [node.target.id]
-        for name, value in zip(names, values):
-            self.symtable.assign(name, value.type_)
-        return hlast.Assign(loc, ts.VoidType(), names, values)
+
+        name = node.target.id
+        self.symtable.assign(name, value.type_)
+        if isinstance(value, hlast.Node):
+            return hlast.Assign(loc, ts.VoidType(), [name], [value])
+        else:
+            return hlast.Noop(loc, ts.void_t)
 
     #-----------------------------------
     # Arithmetic & logic

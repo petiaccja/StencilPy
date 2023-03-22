@@ -378,3 +378,9 @@ class CoreTransformer(SirOpTransformer):
             self.pop_region()
             return converted
         return self.symtable.scope(sc)
+
+    # -----------------------------------
+    # Special
+    # -----------------------------------
+    def visit_Noop(self, _: hlast.Noop) -> list[ops.Value]:
+        return []

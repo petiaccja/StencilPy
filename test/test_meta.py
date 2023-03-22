@@ -21,7 +21,9 @@ def test_typeof(use_jit):
 def test_element_type(use_jit):
     @func
     def fn(value: Any, forcing: Field):
-        return cast(value, element_type(typeof(forcing)))
+        type_ = typeof(forcing)
+        dtype = element_type(type_)
+        return cast(value, dtype)
 
     forcing = Field([TDim], np.array([], np.int))
     assert fn(3.1415, forcing, jit=use_jit) == 3
