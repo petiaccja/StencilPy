@@ -60,8 +60,8 @@ def builtin_select(transformer: NodeTransformer, location: concepts.Location, ar
         location,
         type_,
         cond,
-        [hlast.Yield(location, ts.void_t, [true_value])],
-        [hlast.Yield(location, ts.void_t, [false_value])],
+        [hlast.Yield(location, ts.void_t, true_value)],
+        [hlast.Yield(location, ts.void_t, false_value)],
     )
 
 

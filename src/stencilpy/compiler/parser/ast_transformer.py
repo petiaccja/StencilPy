@@ -244,13 +244,13 @@ class AstTransformer(ast.NodeTransformer):
                 cmp = hlast.ComparisonOperation(loc, bool_type, lhs, rhs, func)
                 expr = hlast.If(
                     loc, bool_type, cmp,
-                    [hlast.Yield(loc, bool_type, [expr])],
-                    [hlast.Yield(loc, bool_type, [c_false])]
+                    [hlast.Yield(loc, bool_type, expr)],
+                    [hlast.Yield(loc, bool_type, c_false)]
                 )
             return hlast.If(
                 loc, bool_type, c_true,
-                [args_assign, hlast.Yield(loc, bool_type, [expr])],
-                [hlast.Yield(loc, bool_type, [c_false])]
+                [args_assign, hlast.Yield(loc, bool_type, expr)],
+                [hlast.Yield(loc, bool_type, c_false)]
             )
 
         is_operand_field = [isinstance(arg.type_, ts.FieldType) for arg in operands]

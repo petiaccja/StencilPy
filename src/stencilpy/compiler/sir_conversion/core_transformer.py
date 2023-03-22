@@ -217,7 +217,7 @@ class CoreTransformer(SirOpTransformer):
 
     def visit_Yield(self, node: hlast.Yield) -> list[ops.Value]:
         loc = as_sir_loc(node.location)
-        values = [self.visit(value)[0] for value in node.values]
+        values = self.visit(node.value)
         self.insert_op(ops.YieldOp(values, loc))
         return []
 

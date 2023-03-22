@@ -173,7 +173,7 @@ class ShapeTransformer(SirOpTransformer):
 
     def visit_Yield(self, node: hlast.Yield) -> list[ops.Value]:
         loc = as_sir_loc(node.location)
-        values = flatten(self.visit(value) for value in node.values if isinstance(value.type_, ts.FieldLikeType))
+        values = self.visit(node.value)
         self.insert_op(ops.YieldOp(values, loc))
         return []
 

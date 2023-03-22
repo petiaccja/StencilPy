@@ -149,7 +149,7 @@ class If(Expr):
 
 @dataclasses.dataclass
 class Yield(Statement):
-    values: list[Expr]
+    value: Expr
 
 
 #-------------------------------------------------------------------------------
