@@ -13,6 +13,6 @@ def typeof(is_jit, value: Any):
         return ts.infer_object_type(value)
 
 @concepts.metafunc
-def element_type(is_jit, value: ts.FieldType):
-    assert isinstance(value, ts.FieldType)
+def element_type(is_jit, value: ts.FieldLikeType):
+    assert isinstance(value, ts.FieldLikeType)
     return value.element_type

@@ -103,3 +103,22 @@ def test_remap(use_jit):
     r = fn(u, conn, jit=use_jit)
     assert r.sorted_dimensions == e.sorted_dimensions
     assert np.all(r.data == e.data)
+
+
+def test_sparsity(use_jit):
+    @func
+    def fn(conn: Connectivity):
+        return sparsity(conn)
+
+    conn = Connectivity(VDim, UDim, LDim, np.array([
+        [-1, 1],
+        [1, 0],
+    ]))
+    expected = Field([VDim, LDim], np.array([
+        [False, True],
+        [True, True],
+    ]))
+
+    r = fn(conn, jit=use_jit)
+    assert r.sorted_dimensions == expected.sorted_dimensions
+    assert np.all(r.data == expected.data)

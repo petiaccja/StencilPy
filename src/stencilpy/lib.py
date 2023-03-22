@@ -56,12 +56,15 @@ def remap_new_dim(is_jit: bool, conn_type: ts.ConnectivityType):
 def remap_stencil(source: storage.Field, conn: storage.Connectivity):
     idx = index()
     conn_value = conn[idx]
-    source_idx = exchange(idx, conn_value, remap_old_dim(meta.typeof(conn)), remap_new_dim(meta.typeof(conn)))
+    invalid_value = cast(-1, meta.typeof(conn_value))
+    fallback_value = cast(0, meta.typeof(conn_value))
+    clamped_value = select(conn_value == invalid_value, fallback_value, conn_value)
+    source_idx = exchange(idx, clamped_value, remap_old_dim(meta.typeof(conn)), remap_new_dim(meta.typeof(conn)))
     return source[source_idx]
 
 
 @concepts.metafunc
-def remap_domain(is_jit: bool, source: Any, conn: Any):
+def remap_domain(is_jit: bool, source: storage.Field | hlast.Expr, conn: storage.Connectivity | hlast.Expr):
     loc = concepts.Location("<remap_domain>", 1, 0)
     src_type = meta.typeof(source, is_jit=is_jit)
     conn_type = meta.typeof(conn, is_jit=is_jit)
@@ -83,3 +86,29 @@ def remap_domain(is_jit: bool, source: Any, conn: Any):
 @func.func
 def remap(source: storage.Field, conn: storage.Connectivity):
     return remap_stencil[remap_domain(source, conn)](source, conn)
+
+
+@func.stencil
+def sparsity_stencil(conn: storage.Connectivity):
+    invalid_value = cast(-1, meta.element_type(meta.typeof(conn)))
+    value = conn[index()]
+    return value != invalid_value
+
+
+@concepts.metafunc
+def sparsity_domain(is_jit: bool, conn: storage.Connectivity | hlast.Expr):
+    loc = concepts.Location("<sparsity_domain>", 1, 0)
+    conn_type = meta.typeof(conn, is_jit=is_jit)
+    assert isinstance(conn_type, ts.ConnectivityType)
+    if is_jit:
+        return (
+            *[hlast.Size(dim, hlast.Shape(loc, ts.index_t, conn, dim)) for dim in conn_type.dimensions],
+        )
+    else:
+        return (
+            *[concepts.Slice(dim, conn.shape[dim]) for dim in conn_type.dimensions],
+        )
+
+@func.func
+def sparsity(conn: storage.Connectivity):
+    return sparsity_stencil[sparsity_domain(conn)](conn)
