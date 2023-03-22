@@ -60,7 +60,7 @@ class AstTransformer(ast.NodeTransformer):
             if len(node.args.args) != len(spec.param_types):
                 raise ArgumentCountError(loc, len(node.args.args), len(spec.param_types))
             parameters = [
-                hlast.Parameter(name.arg, type_)
+                hlast.Parameter(self.get_ast_loc(name), type_, name.arg)
                 for name, type_ in zip(node.args.args, spec.param_types)
             ]
             for param in parameters:

@@ -353,7 +353,7 @@ class CoreTransformer(SirOpTransformer):
 
         name = f"__elemwise_sn_{utility.unique_id()}"
         type_ = ts.StencilType([arg.type_ for arg in node.args], node.type_.element_type, node.type_.dimensions)
-        parameters = [hlast.Parameter(f"__arg{i}", p_type) for i, p_type in enumerate(type_.parameters)]
+        parameters = [hlast.Parameter(loc, p_type, f"__arg{i}") for i, p_type in enumerate(type_.parameters)]
         arg_refs = [hlast.SymbolRef(loc, p_type, f"__arg{i}") for i, p_type in enumerate(type_.parameters)]
         ndindex_type = ts.NDIndexType(type_.dims)
         samples = [

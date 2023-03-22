@@ -51,13 +51,12 @@ class ComparisonFunction(enum.Enum):
     
 
 #-------------------------------------------------------------------------------
-# Structures
+# Primitive nodes & structures
 #-------------------------------------------------------------------------------
 
 @dataclasses.dataclass
-class Parameter:
+class Parameter(Node):
     name: str
-    type_: ts.Type
     
     
 @dataclasses.dataclass
