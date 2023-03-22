@@ -25,6 +25,11 @@ def cast(value: Any, type_: ts.Type):
 
 
 @concepts.builtin
+def select(cond: bool, true_value: Any, false_value: Any):
+    return true_value if cond else false_value
+
+
+@concepts.builtin
 def exchange(
         index: concepts.Index,
         value: Any,

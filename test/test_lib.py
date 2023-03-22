@@ -58,6 +58,15 @@ def test_cast_scalar(use_jit):
     assert np.isclose(a, r)
 
 
+def test_select(use_jit):
+    @func
+    def fn(cond, a, b):
+        return select(cond, a, b)
+
+    assert fn(True, 1, 2, jit=use_jit) == 1
+    assert fn(False, 1, 2, jit=use_jit) == 2
+
+
 def test_remap(use_jit):
     @func
     def fn(a: Field, conn: Connectivity):

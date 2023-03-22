@@ -50,9 +50,25 @@ def builtin_cast(transformer: NodeTransformer, location: concepts.Location, args
     return hlast.Cast(location, type_, value, type_)
 
 
+def builtin_select(transformer: NodeTransformer, location: concepts.Location, args: Sequence[ast.AST]):
+    assert len(args) == 3
+    cond = transformer.visit(args[0])
+    true_value = transformer.visit(args[1])
+    false_value = transformer.visit(args[2])
+    type_ = true_value.type_  # TODO: do type promotion, if possible
+    return hlast.If(
+        location,
+        type_,
+        cond,
+        [hlast.Yield(location, ts.void_t, [true_value])],
+        [hlast.Yield(location, ts.void_t, [false_value])],
+    )
+
+
 BUILTIN_MAPPING = {
     "shape": builtin_shape,
     "index": builtin_index,
     "exchange": builtin_exchange,
     "cast": builtin_cast,
+    "select": builtin_select,
 }
