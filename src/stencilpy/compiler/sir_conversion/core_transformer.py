@@ -87,8 +87,8 @@ class CoreTransformer(SirOpTransformer):
             strides = [c1] * len(src_type.dimensions)
             return self.insert_op(ops.InsertSliceOp(src, dst, offsets, sizes, strides, loc)).get_result()
 
-        types = [node.value.type_]
-        values = self.visit(node.value)
+        types = [node.value.type_] if node.value else []
+        values = self.visit(node.value) if node.value else []
         function_body = self._get_enclosing_function_body()
         assert function_body is not None
 
@@ -236,7 +236,7 @@ class CoreTransformer(SirOpTransformer):
 
     def visit_Yield(self, node: hlast.Yield) -> list[ops.Value]:
         loc = as_sir_loc(node.location)
-        values = self.visit(node.value)
+        values = self.visit(node.value) if node.value else []
         self.insert_op(ops.YieldOp(values, loc))
         return []
 
@@ -317,7 +317,7 @@ class CoreTransformer(SirOpTransformer):
     # -----------------------------------
     def _get_function_type(self, node: hlast.Function | hlast.Stencil) -> sir.FunctionType:
         inputs = [as_sir_type(p.type_) for p in node.parameters]
-        outputs = [as_sir_type(node.result)]
+        outputs = [as_sir_type(node.result)] if not isinstance(node.result, ts.VoidType) else []
         out_args = []
         if isinstance(node, hlast.Function):
             out_args = [as_sir_type(node.result)] if isinstance(node.result, ts.FieldType) else []

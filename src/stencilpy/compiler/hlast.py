@@ -98,7 +98,7 @@ class Stencil(Node):
 
 @dataclasses.dataclass
 class Return(Statement):
-    value: Expr
+    value: Optional[Expr]
 
 
 @dataclasses.dataclass
@@ -159,7 +159,7 @@ class For(Expr):
 
 @dataclasses.dataclass
 class Yield(Statement):
-    value: Expr
+    value: Optional[Expr]
 
 
 #-------------------------------------------------------------------------------

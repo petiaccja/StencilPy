@@ -10,6 +10,14 @@ UDim = Dimension()
 LDim = Dimension()
 
 
+def test_func_return_nothing(use_jit):
+    @func
+    def fn(a: int):
+        a
+
+    assert fn(3, jit=use_jit) is None
+
+
 def test_func_return_scalar(use_jit):
     @func
     def fn(a: int) -> int:

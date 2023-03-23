@@ -69,11 +69,14 @@ class AstTransformer(ast.NodeTransformer):
 
             statements = [self.visit(statement) for statement in node.body]
 
-            result: ts.Type = ts.VoidType()
+            result: Optional[ts.Type] = None
             for statement in statements:
                 if isinstance(statement, hlast.Return):
                     result = statement.value.type_
                     break
+            if result is None:
+                statements.append(hlast.Return(loc, ts.void_t, None))
+                result = ts.void_t
 
             if spec.dims is None:
                 type_ = ts.FunctionType(spec.param_types, result)

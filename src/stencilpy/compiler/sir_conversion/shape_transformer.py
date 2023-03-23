@@ -76,7 +76,7 @@ class ShapeTransformer(SirOpTransformer):
 
     def visit_Return(self, node: hlast.Return) -> list[ops.Value]:
         loc = as_sir_loc(node.location)
-        values = self.visit(node.value) if isinstance(node.value.type_, ts.FieldLikeType) else []
+        values = self.visit(node.value) if node.value and isinstance(node.value.type_, ts.FieldLikeType) else []
         converted = [self.insert_op(ops.CastOp(v, sir.IndexType(), loc)).get_result() for v in values]
         self.insert_op(ops.ReturnOp(converted, loc))
         return []
@@ -192,7 +192,7 @@ class ShapeTransformer(SirOpTransformer):
 
     def visit_Yield(self, node: hlast.Yield) -> list[ops.Value]:
         loc = as_sir_loc(node.location)
-        values = self.visit(node.value)
+        values = self.visit(node.value) if node.value else []
         self.insert_op(ops.YieldOp(values, loc))
         return []
 
