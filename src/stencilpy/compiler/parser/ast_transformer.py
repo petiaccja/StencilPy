@@ -11,6 +11,7 @@ from stencilpy.compiler import hlast
 from stencilpy.compiler import utility
 from .utility import FunctionSpecification, get_source_code, add_closure_vars_to_symtable
 from .builtin_transformers import BUILTIN_MAPPING
+from .verification import ensure_expr, ensure_type, ensure_dimension, ensure_function, ensure_stencil, ensure_builtin
 
 
 class AstTransformer(ast.NodeTransformer):
@@ -84,8 +85,8 @@ class AstTransformer(ast.NodeTransformer):
         return self.symtable.scope(sc, spec)
 
     def visit_Return(self, node: ast.Return) -> hlast.Return:
-        value = self.visit(node.value)
         loc = self.get_ast_loc(node)
+        value = ensure_expr(self.visit(node.value), loc=loc)
         type_ = ts.VoidType()
         return hlast.Return(loc, type_, value)
 
@@ -103,31 +104,26 @@ class AstTransformer(ast.NodeTransformer):
 
     def _visit_call_builtin(self, node: ast.Call) -> Optional[hlast.Expr]:
         loc = self.get_ast_loc(node)
-        if not isinstance(node.func, ast.Name):
+        try:
+            callee = ensure_builtin(self.visit(node.func), loc=loc)
+        except:
             return None
-        callee = self.symtable.lookup(node.func.id)
-        if not callee:
-            raise UndefinedSymbolError(loc, callee)
-        if not isinstance(callee, hlast.ClosureVariable):
-            return None
-        if not isinstance(callee.value, concepts.Builtin):
-            return None
-        if callee.value.name not in BUILTIN_MAPPING:
-                raise InternalCompilerError(loc, f"builtin function `{callee.value.name}` is not implemented")
-        return BUILTIN_MAPPING[callee.value.name](self, loc, node.args)
+        if callee.name not in BUILTIN_MAPPING:
+            raise InternalCompilerError(loc, f"builtin function `{callee.name}` is not implemented")
+        return BUILTIN_MAPPING[callee.name](self, loc, node.args)
 
     def _visit_call_apply(self, node: ast.Call) -> Optional[hlast.Apply]:
         loc = self.get_ast_loc(node)
-        node_shape = node.func
-        if not isinstance(node_shape, ast.Subscript):
-            return None
-        callable_ = self.visit(node_shape.value)
-        if not isinstance(callable_, concepts.Stencil):
+        try:
+            node_shape = node.func
+            assert isinstance(node_shape, ast.Subscript)
+            callable_ = ensure_stencil(self.visit(node_shape.value), loc=loc)
+        except:
             return None
         sizes: Sequence[hlast.Size] = self._visit_getitem_expr(node_shape.slice)
         shape = {sz.dimension: sz.size for sz in sizes}
         dims = sorted(sz.dimension for sz in sizes)
-        args = [self.visit(arg) for arg in node.args]
+        args = [ensure_expr(self.visit(arg)) for arg in node.args]
         stencil = self.instantiate(callable_.definition, [arg.type_ for arg in args], False, dims)
         assert isinstance(stencil.type_, ts.StencilType)
         type_ = ts.FieldType(stencil.type_.result, stencil.type_.dims)
@@ -135,10 +131,11 @@ class AstTransformer(ast.NodeTransformer):
 
     def _visit_call_call(self, node: ast.Call) -> Optional[hlast.Call]:
         loc = self.get_ast_loc(node)
-        callable_ = self.visit(node.func)
-        if not isinstance(callable_, concepts.Function):
+        try:
+            callable_ = ensure_function(self.visit(node.func))
+        except:
             return None
-        args = [self.visit(arg) for arg in node.args]
+        args = [ensure_expr(self.visit(arg)) for arg in node.args]
         func = self.instantiate(callable_.definition, [arg.type_ for arg in args], False)
         assert isinstance(func.type_, ts.FunctionType)
         type_ = func.type_.result
@@ -183,7 +180,6 @@ class AstTransformer(ast.NodeTransformer):
             return hlast.Assign(loc, ts.void_t, names, [value])
         else:
             return hlast.Noop(loc, ts.void_t)
-        
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> hlast.Statement:
         loc = self.get_ast_loc(node)
@@ -204,26 +200,31 @@ class AstTransformer(ast.NodeTransformer):
 
     def visit_Constant(self, node: ast.Constant) -> hlast.Constant:
         loc = self.get_ast_loc(node)
-        type_ = ts.infer_object_type(node.value)
-        value = node.value
-        return hlast.Constant(loc, type_, value)
+        try:
+            type_ = ts.infer_object_type(node.value)
+            value = node.value
+            return hlast.Constant(loc, type_, value)
+        except Exception as ex:
+            raise CompilationError(loc, f"invalid constant expression: {node.value}") from ex
 
     def visit_BinOp(self, node: ast.BinOp) -> hlast.Expr:
         loc = self.get_ast_loc(node)
-        lhs = self.visit(node.left)
-        rhs = self.visit(node.right)
+        lhs = ensure_expr(self.visit(node.left), loc=loc)
+        rhs = ensure_expr(self.visit(node.right), loc=loc)
         func = self.visit(node.op)
 
         def builder(args: list[hlast.Expr]) -> hlast.Expr:
             type_ = args[0].type_  # TODO: promote to common type
             return hlast.ArithmeticOperation(loc, type_, args[0], args[1], func)
 
-        is_lhs_field = isinstance(lhs.type_, ts.FieldType)
-        is_rhs_field = isinstance(rhs.type_, ts.FieldType)
-        lhs_element_type = lhs.type_.element_type if is_lhs_field else lhs.type_
-        rhs_element_type = rhs.type_.element_type if is_rhs_field else rhs.type_
-        lhs_dimensions = lhs.type_.dimensions if is_lhs_field else []
-        rhs_dimensions = rhs.type_.dimensions if is_rhs_field else []
+        lhs_type = ensure_type(lhs, (ts.FieldType, ts.NumberType))
+        rhs_type = ensure_type(rhs, (ts.FieldType, ts.NumberType))
+        is_lhs_field = isinstance(lhs_type, ts.FieldType)
+        is_rhs_field = isinstance(rhs_type, ts.FieldType)
+        lhs_element_type = lhs_type.element_type if is_lhs_field else lhs.type_
+        rhs_element_type = rhs_type.element_type if is_rhs_field else rhs.type_
+        lhs_dimensions = lhs_type.dimensions if is_lhs_field else []
+        rhs_dimensions = rhs_type.dimensions if is_rhs_field else []
         if is_lhs_field or is_rhs_field:
             element_type = lhs_element_type  # TODO: promote to common type
             dimensions = sorted(list(set(lhs_dimensions) | set(rhs_dimensions)))
@@ -234,44 +235,43 @@ class AstTransformer(ast.NodeTransformer):
 
     def visit_Compare(self, node: ast.Compare) -> Any:
         loc = self.get_ast_loc(node)
-        operands = [self.visit(operand) for operand in [node.left, *node.comparators]]
+        operands = [ensure_expr(self.visit(operand), loc=loc) for operand in [node.left, *node.comparators]]
         funcs = [self.visit(op) for op in node.ops]
 
-        bool_type = ts.IntegerType(1, True)
         def builder(args: list[hlast.Expr]) -> hlast.Expr:
             args_names = [f"__cmp_operand{i}" for i in range(len(args))]
             args_assign = hlast.Assign(loc, ts.VoidType(), args_names, args)
             args_refs = [hlast.SymbolRef(loc, v.type_, name) for v, name in zip(args, args_names)]
 
-            c_true = hlast.Constant(loc, bool_type, 1)
-            c_false = hlast.Constant(loc, bool_type, 0)
+            c_true = hlast.Constant(loc, ts.bool_t, 1)
+            c_false = hlast.Constant(loc, ts.bool_t, 0)
             expr = c_true
             for i in range(len(funcs) - 1, -1, -1):
                 func = funcs[i]
                 lhs = args_refs[i]
                 rhs = args_refs[i + 1]
-                cmp = hlast.ComparisonOperation(loc, bool_type, lhs, rhs, func)
+                cmp = hlast.ComparisonOperation(loc, ts.bool_t, lhs, rhs, func)
                 expr = hlast.If(
-                    loc, bool_type, cmp,
-                    [hlast.Yield(loc, bool_type, expr)],
-                    [hlast.Yield(loc, bool_type, c_false)]
+                    loc, ts.bool_t, cmp,
+                    [hlast.Yield(loc, ts.bool_t, expr)],
+                    [hlast.Yield(loc, ts.bool_t, c_false)]
                 )
             return hlast.If(
-                loc, bool_type, c_true,
-                [args_assign, hlast.Yield(loc, bool_type, expr)],
-                [hlast.Yield(loc, bool_type, c_false)]
+                loc, ts.bool_t, c_true,
+                [args_assign, hlast.Yield(loc, ts.bool_t, expr)],
+                [hlast.Yield(loc, ts.bool_t, c_false)]
             )
 
-        is_operand_field = [isinstance(arg.type_, ts.FieldType) for arg in operands]
+        arg_types = [ensure_type(arg, (ts.FieldType, ts.NumberType)) for arg in operands]
         operand_dimensions = [
-            arg.type_.dimensions if is_field else []
-            for is_field, arg in zip(is_operand_field, operands)
+            t.dimensions if isinstance(t, ts.FieldType) else []
+            for t in arg_types
         ]
-        if any(is_operand_field):
+        if any(isinstance(t, ts.FieldType) for t in arg_types):
             element_type = ts.IntegerType(1, False)
             merged_dims = set()
             for dims in operand_dimensions:
-                merged_dims = merged_dims | dims
+                merged_dims = merged_dims | set(dims)
             dimensions = sorted(list(merged_dims))
             type_ = ts.FieldType(element_type, dimensions)
             return hlast.ElementwiseOperation(loc, type_, operands, builder)
@@ -280,24 +280,25 @@ class AstTransformer(ast.NodeTransformer):
 
     def visit_UnaryOp(self, node: ast.UnaryOp) -> hlast.Expr:
         loc = self.get_ast_loc(node)
-        value = self.visit(node.operand)
-        type_ = value.type_.element_type if isinstance(value.type_, ts.FieldType) else value.type_
+        value = ensure_expr(self.visit(node.operand), loc=loc)
+        value_type = ensure_type(value, (ts.FieldType, ts.NumberType))
+        element_type = value_type.element_type if isinstance(value_type, ts.FieldType) else value_type
         if isinstance(node.op, ast.UAdd):
             return value
         elif isinstance(node.op, ast.USub):
-            sign_val = -1.0 if isinstance(type_, ts.FloatType) else -1
-            c_sign = hlast.Constant(loc, type_, sign_val)
-            return hlast.ArithmeticOperation(loc, value.type_, c_sign, value, hlast.ArithmeticFunction.MUL)
+            sign_val = -1.0 if isinstance(element_type, ts.FloatType) else -1
+            c_sign = hlast.Constant(loc, element_type, sign_val)
+            return hlast.ArithmeticOperation(loc, value_type, c_sign, value, hlast.ArithmeticFunction.MUL)
         elif isinstance(node.op, ast.Invert):
-            if not isinstance(type_, (ts.IndexType, ts.IntegerType)):
-                raise ArgumentCompatibilityError(loc, "bit inversion", [type_])
-            c_bitmask = hlast.Constant(loc, type_, -1)
-            return hlast.ArithmeticOperation(loc, value.type_, c_bitmask, value, hlast.ArithmeticFunction.BIT_XOR)
+            if not isinstance(element_type, (ts.IndexType, ts.IntegerType)):
+                raise ArgumentCompatibilityError(loc, "bit inversion", [element_type])
+            c_bitmask = hlast.Constant(loc, element_type, -1)
+            return hlast.ArithmeticOperation(loc, value_type, c_bitmask, value, hlast.ArithmeticFunction.BIT_XOR)
         elif isinstance(node.op, ast.Not):
             bool_t = ts.IntegerType(1, True)
-            compare_val = 0.0 if isinstance(type_, ts.FloatType) else 0
-            c_compare = hlast.Constant(loc, type_, compare_val)
-            c_bitmask = hlast.Constant(loc, type_, 1)
+            compare_val = 0.0 if isinstance(element_type, ts.FloatType) else 0
+            c_compare = hlast.Constant(loc, element_type, compare_val)
+            c_bitmask = hlast.Constant(loc, element_type, 1)
             boolified = hlast.ComparisonOperation(loc, bool_t, value, c_compare, hlast.ComparisonFunction.NEQ)
             return hlast.ArithmeticOperation(loc, bool_t, c_bitmask, boolified, hlast.ArithmeticFunction.BIT_XOR)
         raise CompilationError(loc, f"unary operator {type(node.op)} not implemented")
@@ -354,9 +355,10 @@ class AstTransformer(ast.NodeTransformer):
         global invalid_dim
         if not "invalid_dim" in globals():
             invalid_dim = concepts.Dimension("INVALID_DIM")
-        lower = self.visit(node.lower) if node.lower else None
-        upper = self.visit(node.upper) if node.upper else None
-        step = self.visit(node.step) if node.step else None
+        loc = self.get_ast_loc(node)
+        lower = ensure_expr(self.visit(node.lower), loc=loc) if node.lower else None
+        upper = ensure_expr(self.visit(node.upper), loc=loc) if node.upper else None
+        step = ensure_expr(self.visit(node.step), loc=loc) if node.step else None
         return hlast.Slice(invalid_dim, lower, upper, step)
 
     def visit_Expr(self, node: ast.Expr) -> Any:

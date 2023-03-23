@@ -16,7 +16,13 @@ class Type:
 
 
 @dataclasses.dataclass
-class IntegerType(Type):
+class NumberType(Type):
+    def __str__(self):
+        return "<NUMBER>"
+
+
+@dataclasses.dataclass
+class IntegerType(NumberType):
     width: int
     signed: bool
 
@@ -25,7 +31,7 @@ class IntegerType(Type):
 
 
 @dataclasses.dataclass
-class FloatType(Type):
+class FloatType(NumberType):
     width: int
 
     def __str__(self):
@@ -33,7 +39,7 @@ class FloatType(Type):
 
 
 @dataclasses.dataclass
-class IndexType(Type):
+class IndexType(NumberType):
     def __str__(self):
         return "index"
 
@@ -137,6 +143,7 @@ def infer_object_type(arg: Any) -> Type:
             return FloatType(8 * dtype.itemsize)
         if dtype.kind == 'b':
             return IntegerType(1, True)
+        raise ValueError("unknown dtype")
 
     if isinstance(arg, storage.Field):
         element_type = translate_dtype(arg.data.dtype)
