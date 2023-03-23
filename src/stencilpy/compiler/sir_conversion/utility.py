@@ -1,9 +1,8 @@
-import itertools
-
 from stencilpy import concepts
 from stencilpy.compiler import hlast
 from stencilpy.compiler import types as ts
 from stencilir import ops
+from stencilpy.utility import flatten
 import stencilir as sir
 from typing import Sequence, Iterable, Any, Optional
 
@@ -85,7 +84,3 @@ def is_slice_adjustment_trivial(
 
 def shape_func_name(name: str):
     return f"__shapes_{name}"
-
-
-def flatten(values: Iterable[Iterable[Any]]) -> list[Any]:
-    return list(itertools.chain(*values))

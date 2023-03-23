@@ -6,6 +6,7 @@ import stencilir as sir
 from stencilpy.compiler import hlast
 from stencilpy.compiler import types as ts
 from stencilpy import utility
+from stencilpy.utility import flatten, flatten_recursive
 from .utility import (
     as_sir_loc,
     as_sir_type,
@@ -14,7 +15,6 @@ from .utility import (
     is_slice_adjustment_trivial,
     map_elementwise_shape,
     shape_func_name,
-    flatten,
 )
 from typing import Optional
 
@@ -87,20 +87,24 @@ class CoreTransformer(SirOpTransformer):
             strides = [c1] * len(src_type.dimensions)
             return self.insert_op(ops.InsertSliceOp(src, dst, offsets, sizes, strides, loc)).get_result()
 
-        types = [node.value.type_] if node.value else []
+        types = ts.flatten_type(node.value.type_) if node.value else []
         values = self.visit(node.value) if node.value else []
+        assert len(types) == len(values)
         function_body = self._get_enclosing_function_body()
         assert function_body is not None
 
-        updated_values: list[ops.Value] = []
-        for idx, type_, value in zip(range(len(values)), reversed(types), reversed(values)):
+        num_out_args = sum(1 if isinstance(t, ts.FieldLikeType) else 0 for t in types)
+        body_args = function_body.get_args()
+        out_args_idx = -num_out_args
+        for idx, type_, value in zip(range(len(values)), types, values):
             if isinstance(type_, ts.FieldLikeType):
-                new_value = insert(value, function_body.get_args()[-idx - 1], type_)
+                new_value = insert(value, body_args[out_args_idx], type_)
+                out_args_idx += 1
             else:
                 new_value = value
-            updated_values.append(new_value)
+            values[idx] = new_value
 
-        self.insert_op(ops.ReturnOp(list(reversed(updated_values)), loc))
+        self.insert_op(ops.ReturnOp(values, loc))
         return []
 
     def visit_Call(self, node: hlast.Call) -> list[ops.Value]:
@@ -115,10 +119,16 @@ class CoreTransformer(SirOpTransformer):
         inputs = flatten(self.visit(arg) for arg in node.args)
         shape = [self.visit(size)[0] for dim, size in sorted(node.shape.items(), key=lambda x: x[0])]
         shape = [self.insert_op(ops.CastOp(size, sir.IndexType(), loc)).get_result() for size in shape]
-        assert isinstance(node.type_, ts.FieldType)
-        dtype = as_sir_type(node.type_.element_type)
-        outputs = [self.insert_op(ops.AllocTensorOp(dtype, shape, loc)).get_result()]
-        static_offsets = [0]*len(node.type_.dimensions)
+        result_types = ts.flatten_type(node.type_)
+        outputs: list[ops.Value] = []
+        ndims = 0
+        for t in result_types:
+            assert isinstance(t, ts.FieldType)
+            dtype = as_sir_type(t.element_type)
+            buffer = self.insert_op(ops.AllocTensorOp(dtype, shape, loc)).get_result()
+            outputs.append(buffer)
+            ndims = len(t.dimensions)
+        static_offsets = [0]*ndims
         return self.insert_op(ops.ApplyOp(node.stencil, inputs, outputs, [], static_offsets, loc)).get_results()
 
     # -----------------------------------
@@ -131,6 +141,17 @@ class CoreTransformer(SirOpTransformer):
         for name, value in zip(node.names, node.values):
             self.symtable.assign(name, self.visit(value))
         return []
+
+    # -----------------------------------
+    # Structured types
+    # -----------------------------------
+    def visit_TupleCreate(self, node: hlast.TupleCreate) -> list[ops.Value]:
+        return flatten_recursive(self.visit(e) for e in node.elements)
+
+    def visit_TupleExtract(self, node: hlast.TupleExtract):
+        values = self.visit(node.value)
+        structured = ts.unflatten(values, node.value.type_)
+        return flatten_recursive(structured[node.item])
 
     #-----------------------------------
     # Arithmetic & logic
@@ -316,19 +337,21 @@ class CoreTransformer(SirOpTransformer):
     # Utility functions
     # -----------------------------------
     def _get_function_type(self, node: hlast.Function | hlast.Stencil) -> sir.FunctionType:
-        inputs = [as_sir_type(p.type_) for p in node.parameters]
-        outputs = [as_sir_type(node.result)] if not isinstance(node.result, ts.VoidType) else []
+        flat_inputs = flatten(ts.flatten_type(p.type_) for p in node.parameters)
+        flat_outputs = ts.flatten_type(node.result) if not isinstance(node.result, ts.VoidType) else []
+        inputs = [as_sir_type(t) for t in flat_inputs]
+        outputs = [as_sir_type(t) for t in flat_outputs]
         out_args = []
         if isinstance(node, hlast.Function):
-            out_args = [as_sir_type(node.result)] if isinstance(node.result, ts.FieldType) else []
+            out_args = [as_sir_type(out) for out in flat_outputs if isinstance(out, ts.FieldLikeType)]
         return sir.FunctionType([*inputs, *out_args], outputs)
 
     def _get_function_args(self, node: hlast.Function | hlast.Stencil, body: ops.Region) -> list[list[ops.Value]]:
         values: list[list[ops.Value]] = []
         region_args = body.get_args()
         offset = 0
-        for _ in node.parameters:
-            num_args = 1  # Flatten parameters of tuple type
+        for p in node.parameters:
+            num_args = len(ts.flatten_type(p.type_))
             values.append(region_args[offset:(offset + num_args)])
             offset += num_args
         return values

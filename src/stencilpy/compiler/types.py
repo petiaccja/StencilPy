@@ -4,9 +4,10 @@ import dataclasses
 
 from stencilpy import concepts
 from stencilpy import storage
-from typing import Any, Sequence
+from typing import Any, Sequence, Iterable
 import numpy as np
 import numpy.typing as np_typing
+from stencilpy import utility
 
 
 @dataclasses.dataclass
@@ -133,6 +134,14 @@ class StencilType(Type):
         return f"({params}) <{dims}> -> {results}"
 
 
+@dataclasses.dataclass
+class TupleType(Type):
+    elements: list[Type]
+
+    def __str__(self):
+        return f"({', '.join([str(t) for t in self.elements])})"
+
+
 def infer_object_type(arg: Any) -> Type:
     def translate_dtype(dtype: np.typing.DTypeLike):
         if dtype.kind == 'i':
@@ -152,6 +161,9 @@ def infer_object_type(arg: Any) -> Type:
     elif isinstance(arg, storage.Connectivity):
         element_type = translate_dtype(arg.data.dtype)
         return ConnectivityType(element_type, arg.origin_dimension, arg.neighbor_dimension, arg.element_dimension)
+    elif isinstance(arg, tuple):
+        elements = [infer_object_type(e) for e in arg]
+        return TupleType(elements)
     else:
         dtype = np.dtype(type(arg))
         return translate_dtype(dtype)
@@ -180,6 +192,26 @@ def as_numpy_type(type_: Type) -> np_typing.DTypeLike:
         if ctypes.sizeof(ctypes.c_void_p) == 4: return np.int32
         if ctypes.sizeof(ctypes.c_void_p) == 8: return np.int64
     raise ValueError(f"cannot convert type {type_} to numpy dtype-like")
+
+
+def flatten_type(type_: Type) -> list[Type]:
+    if isinstance(type_, TupleType):
+        return utility.flatten(flatten_type(elem_type) for elem_type in type_.elements)
+    return [type_]
+
+
+def _unflatten_helper(values: Sequence, type_: Type):
+    if not isinstance(type_, TupleType):
+        return values[0], values[1:]
+
+    elements = []
+    for elem_type in type_.elements:
+        element, values = _unflatten_helper(values, elem_type)
+        elements.append(element)
+    return tuple(elements), values
+
+def unflatten(values: Sequence, type_: Type):
+    return _unflatten_helper(values, type_)[0]
 
 
 void_t = VoidType()

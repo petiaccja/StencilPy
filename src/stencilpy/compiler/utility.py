@@ -22,8 +22,9 @@ def format_type_short(type_: ts.Type):
 
 
 def mangle_name(name: str, param_types: list[ts.Type], dims: Optional[list[concepts.Dimension]] = None):
+    flat_types = ts.flatten_type(ts.TupleType(param_types))
     terms = name.split(".")
     base_name = "".join([f"{len(term)}{term}" for term in terms])
-    param_codes = [format_type_short(type_) for type_ in param_types]
+    param_codes = [format_type_short(type_) for type_ in flat_types]
     dim_codes = f"_{'x'.join([str(dim.id) for dim in dims])}" if dims else ""
     return f"__{base_name}__{'_'.join(param_codes)}{dim_codes}"

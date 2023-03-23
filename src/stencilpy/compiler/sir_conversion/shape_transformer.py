@@ -1,16 +1,18 @@
+import itertools
+
 from .basic_transformer import SirOpTransformer
 from stencilir import ops
 import stencilir as sir
 from stencilpy.compiler import hlast
 from stencilpy.compiler import types as ts
+from stencilpy.utility import flatten, flatten_recursive
 from .utility import (
     as_sir_loc,
     as_sir_type,
     as_sir_arithmetic,
     as_sir_comparison,
     map_elementwise_shape,
-    shape_func_name,
-    flatten
+    shape_func_name
 )
 
 
@@ -33,58 +35,67 @@ class ShapeTransformer(SirOpTransformer):
     def visit_Function(self, node: hlast.Function) -> list[ops.Value]:
         loc = as_sir_loc(node.location)
 
-        parameters = []
-        for param in node.parameters:
-            if isinstance(param.type_, ts.FieldLikeType):
-                ndims = len(param.type_.dimensions)
-                parameters = [*parameters, *[sir.IndexType()]*ndims]
-            else:
-                parameters.append(as_sir_type(param.type_))
-
-        results = []
-        if isinstance(node.result, ts.FieldLikeType):
-            ndims = len(node.result.dimensions)
-            results = [sir.IndexType()]*ndims
-
         name = shape_func_name(node.name)
-        function_type = sir.FunctionType(parameters, results)
-
-        func: ops.FuncOp = self.insert_op(ops.FuncOp(name, function_type, node.is_public, loc))
-        self.symtable.assign(name, func)
-
+        internal_name = "__internal" + name
+        internal_function_type = self._get_function_type(node, False)
+        internal_func: ops.FuncOp = self.insert_op(
+            ops.FuncOp(internal_name, internal_function_type, False, loc)
+        )
+        self.symtable.assign(internal_name, internal_func)
         def sc():
-            self.push_region(func.get_body())
-
-            arg_idx = 0
-            for param in node.parameters:
-                if isinstance(param.type_, ts.FieldLikeType):
-                    ndims = len(param.type_.dimensions)
-                    shape = self.current_region.get_args()[arg_idx:(arg_idx + ndims)]
-                    self.symtable.assign(param.name, shape)
-                    arg_idx += ndims
-                else:
-                    self.symtable.assign(param.name, [self.current_region.get_args()[arg_idx]])
-                    arg_idx += 1
-
+            for param, value in zip(node.parameters, self._get_function_args(node, internal_func.get_body())):
+                self.symtable.assign(param.name, value)
+            self.push_region(internal_func.get_body())
             for statement in node.body:
                 self.visit(statement)
-
             self.pop_region()
-
         self.symtable.scope(sc)
+
+        function_type = self._get_function_type(node, True)
+        func: ops.FuncOp = self.insert_op(ops.FuncOp(name, function_type, node.is_public, loc))
+        self.symtable.assign(name, func)
+        def sc():
+            self.push_region(func.get_body())
+            args = func.get_region_args()
+            values = self.insert_op(ops.CallOp(internal_func, args, loc)).get_results()
+            types = ts.flatten_type(node.result) if not isinstance(node.result, ts.VoidType) else []
+            counts = [len(t.dimensions) if isinstance(t, ts.FieldLikeType) else 1 for t in types]
+            assert sum(counts) == len(values)
+            offsets = [v - counts[0] for v in itertools.accumulate(counts)]
+            results = flatten(
+                values[off:off + cnt]
+                for off, cnt, t in zip(offsets, counts, types) if isinstance(t, ts.FieldLikeType)
+            )
+            self.insert_op(ops.ReturnOp(results, loc))
+            self.pop_region()
+        self.symtable.scope(sc)
+
         return []
 
     def visit_Return(self, node: hlast.Return) -> list[ops.Value]:
         loc = as_sir_loc(node.location)
-        values = self.visit(node.value) if node.value and isinstance(node.value.type_, ts.FieldLikeType) else []
-        converted = [self.insert_op(ops.CastOp(v, sir.IndexType(), loc)).get_result() for v in values]
-        self.insert_op(ops.ReturnOp(converted, loc))
+        types = ts.flatten_type(node.value.type_) if node.value else []
+        counts = [len(t.dimensions) if isinstance(t, ts.FieldLikeType) else 1 for t in types]
+        values = self.visit(node.value) if node.value else []
+        assert sum(counts) == len(values)
+        offsets = [v - counts[0] for v in itertools.accumulate(counts)]
+        results = [values[off:off+cnt] for off, cnt in zip(offsets, counts)]
+        converted = [
+            (
+                [self.insert_op(ops.CastOp(v, sir.IndexType(), loc)).get_result() for v in result]
+                if isinstance(type_, ts.FieldLikeType)
+                else result
+            )
+            for result, type_ in zip(results, types)
+        ]
+        self.insert_op(ops.ReturnOp(flatten(converted), loc))
         return []
 
     def visit_Call(self, node: hlast.Call) -> list[ops.Value]:
         loc = as_sir_loc(node.location)
-        name = shape_func_name(node.name)
-        num_outs = len(node.type_.dimensions) if isinstance(node.type_, ts.FieldLikeType) else 0
+        name = "__internal" + shape_func_name(node.name)
+        result_types = ts.flatten_type(node.type_) if not isinstance(node.type_, ts.VoidType) else []
+        num_outs = sum(len(t.dimensions) if isinstance(t, ts.FieldLikeType) else 1 for t in result_types)
         args = flatten(self.visit(arg) for arg in node.args)
         return self.insert_op(ops.CallOp(name, num_outs, args, loc)).get_results()
 
@@ -93,7 +104,8 @@ class ShapeTransformer(SirOpTransformer):
         shape = [self.visit(size) for _, size in node_shape]
         assert all(len(size) == 1 for size in shape)
         shape = [size[0] for size in shape]
-        return shape
+        num_results = len(ts.flatten_type(node.type_))
+        return flatten_recursive(shape*num_results)
 
     # -----------------------------------
     # Symbols
@@ -107,13 +119,24 @@ class ShapeTransformer(SirOpTransformer):
         return []
 
     # -----------------------------------
+    # Structured types
+    # -----------------------------------
+    def visit_TupleCreate(self, node: hlast.TupleCreate) -> list[ops.Value]:
+        return flatten_recursive(self.visit(e) for e in node.elements)
+
+    def visit_TupleExtract(self, node: hlast.TupleExtract):
+        values = self.visit(node.value)
+        structured = ts.unflatten(values, node.value.type_)
+        return flatten_recursive(structured[node.item])
+
+    # -----------------------------------
     # Arithmetic & logic
     # -----------------------------------
     def visit_Cast(self, node: hlast.Cast) -> list[ops.Value]:
         loc = as_sir_loc(node.location)
-        value = self.visit(node.value)[0]
+        value = self.visit(node.value)
         type_ = as_sir_type(node.type_)
-        return self.insert_op(ops.ConstantOp(value, type_, loc)).get_result()
+        return self.insert_op(ops.CastOp(*value, type_, loc)).get_results()
 
     def visit_Constant(self, node: hlast.Constant) -> list[ops.Value]:
         loc = as_sir_loc(node.location)
@@ -230,3 +253,39 @@ class ShapeTransformer(SirOpTransformer):
     # -----------------------------------
     def visit_Noop(self, _: hlast.Noop) -> list[ops.Value]:
         return []
+
+    # -----------------------------------
+    # Utility functions
+    # -----------------------------------
+    def _get_function_type(self, node: hlast.Function, fields_only: bool) -> sir.FunctionType:
+        parameters = []
+        node_param_types = [param.type_ for param in node.parameters]
+        flat_param_types = ts.flatten_type(ts.TupleType(node_param_types))
+        for param_type in flat_param_types:
+            if isinstance(param_type, ts.FieldLikeType):
+                ndims = len(param_type.dimensions)
+                parameters = [*parameters, *[sir.IndexType()]*ndims]
+            else:
+                parameters.append(as_sir_type(param_type))
+
+        results = []
+        flat_result_types = ts.flatten_type(node.result) if not isinstance(node.result, ts.VoidType) else []
+        for result_type in flat_result_types:
+            if isinstance(result_type, ts.FieldLikeType):
+                ndims = len(result_type.dimensions)
+                results = [*results, *[sir.IndexType()]*ndims]
+            elif not fields_only:
+                results.append(as_sir_type(result_type))
+
+        return sir.FunctionType(parameters, results)
+
+    def _get_function_args(self, node: hlast.Function, body: ops.Region) -> list[list[ops.Value]]:
+        values: list[list[ops.Value]] = []
+        region_args = body.get_args()
+        offset = 0
+        for p in node.parameters:
+            types = ts.flatten_type(p.type_)
+            num_args = sum(len(t.dimensions) if isinstance(t, ts.FieldLikeType) else 1 for t in types)
+            values.append(region_args[offset:(offset + num_args)])
+            offset += num_args
+        return values

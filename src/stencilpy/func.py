@@ -8,11 +8,23 @@ from stencilpy import storage
 from stencilpy import concepts
 from stencilpy.compiler import hlast
 from stencilpy.compiler import parser
-from stencilpy.compiler import utility
+from stencilpy.compiler import utility as cutil
+from stencilpy import utility as gutil
 
 import stencilir as sir
 from stencilpy.compiler import types as ts
 from stencilpy.compiler import sir_conversion
+
+
+#-------------------------------------------------------------------------------
+# Stencils and indices
+#-------------------------------------------------------------------------------
+_index: Optional[concepts.Index] = None
+
+
+def _set_index(idx: concepts.Index):
+    global _index
+    _index = idx
 
 
 def _generate_indices(slices: Sequence[slice]) -> tuple[int, ...]:
@@ -30,50 +42,63 @@ def _set_field_item(field_: storage.Field, idx: concepts.Index, value: Any):
     field_.data[raw_idx] = value
 
 
-def _translate_arg(arg: Any) -> Any:
+#-------------------------------------------------------------------------------
+# Argument and return value ABI translation
+#-------------------------------------------------------------------------------
+def _translate_regular_arg(arg: Any) -> Any:
     if isinstance(arg, storage.FieldLike):
         return memoryview(arg.data)
     return arg
 
 
-_index: Optional[concepts.Index] = None
+def _translate_regular_args(args: Any) -> list[Any]:
+    flat_args = gutil.flatten_recursive(args)
+    return [_translate_regular_arg(arg) for arg in flat_args]
 
 
-def _set_index(idx: concepts.Index):
-    global _index
-    _index = idx
+def _translate_shape_arg(arg: Any) -> Any:
+    if isinstance(arg, storage.FieldLike):
+        return memoryview(arg.data).shape
+    return arg
 
 
-def _get_signature(hast_module: hlast.Module, func_name: str) -> ts.FunctionType:
-    for func in hast_module.functions:
-        if func.name == func_name:
-            assert isinstance(func.type_, ts.FunctionType)
-            return func.type_
-    raise KeyError(f"function {func_name} not found in module")
+def _translate_shape_args(args: Any) -> Any:
+    flat_args = gutil.flatten_recursive(args)
+    return gutil.flatten_recursive(_translate_shape_arg(arg) for arg in flat_args)
 
 
-def _allocate_results(
-        func_name: str,
-        func_signature: ts.FunctionType,
+def _get_result_shapes(
+        mangled_name: str,
+        result_types: list[ts.Type],
         module: sir.CompiledModule,
         args: Sequence[Any]
-):
-    shape_func_name = sir_conversion.shape_func_name(func_name)
-    args_and_shapes = [arg.data.shape if isinstance(arg, storage.FieldLike) else [arg] for arg in args]
-    args_and_shapes = list(itertools.chain(*args_and_shapes))
-    translated_args = [_translate_arg(arg) for arg in args_and_shapes]
-    shapes = module.invoke(shape_func_name, *translated_args)
-    if not isinstance(shapes, tuple):
-        shapes = (shapes,)
-    fields = []
-    start = 0
-    if isinstance(func_signature.result, ts.FieldType):
-        end = start + len(func_signature.result.dimensions)
-        shape = shapes[start:end]
-        dtype = ts.as_numpy_type(func_signature.result.element_type)
-        fields.append(storage.Field(func_signature.result.dimensions, np.empty(shape, dtype)))
-        start = end
-    return tuple(fields)
+) -> list[tuple]:
+    translated_args = _translate_shape_args(args)
+    flat_shapes = module.invoke(sir_conversion.shape_func_name(mangled_name), *translated_args)
+    if flat_shapes and not isinstance(flat_shapes, Sequence):
+        flat_shapes = flat_shapes,
+    ndims = [len(t.dimensions) for t in result_types if isinstance(t, ts.FieldLikeType)]
+    offsets = [v - ndims[0] for v in itertools.accumulate(ndims)]
+    shapes = [tuple(flat_shapes[off:off+nd]) for off, nd in zip(offsets, ndims)]
+    return shapes
+
+
+def _allocate_results(result_types: list[ts.Type], result_shapes: list[tuple]) -> tuple[storage.Field, ...]:
+    field_results = [type_ for type_ in result_types if isinstance(type_, ts.FieldLikeType)]
+    assert len(field_results) == len(result_shapes)
+    outs: list[storage.Field | storage.Connectivity] = []
+    for type_, shape in zip(field_results, result_shapes):
+        element_type = type_.element_type
+        dtype = ts.as_numpy_type(element_type)
+        buffer = np.empty(shape, dtype)
+        if isinstance(type_, ts.FieldType):
+            out = storage.Field(type_.dimensions, buffer)
+        elif isinstance(type_, ts.ConnectivityType):
+            out = storage.Connectivity(type_.origin_dimension, type_.neighbor_dimension, type_.element_dimension, buffer)
+        else:
+            assert False
+        outs.append(out)
+    return tuple(outs)
 
 
 def _match_results_to_outs(results: Any, out_args: tuple) -> Any:
@@ -92,6 +117,17 @@ def _match_results_to_outs(results: Any, out_args: tuple) -> Any:
     return matched[0] if len(matched) == 1 else tuple(matched)
 
 
+#-------------------------------------------------------------------------------
+# Parsing
+#-------------------------------------------------------------------------------
+def _get_signature(hast_module: hlast.Module, func_name: str) -> ts.FunctionType:
+    for func in hast_module.functions:
+        if func.name == func_name:
+            assert isinstance(func.type_, ts.FunctionType)
+            return func.type_
+    raise KeyError(f"function {func_name} not found in module")
+
+
 @dataclasses.dataclass
 class JitFunction:
     definition: Callable
@@ -105,7 +141,7 @@ class JitFunction:
 
     def call_jit(self, *args, **kwargs):
         arg_types = [ts.infer_object_type(arg) for arg in args]
-        func_name = utility.mangle_name(f"{self.definition.__module__}.{self.definition.__name__}", arg_types)
+        func_name = cutil.mangle_name(f"{self.definition.__module__}.{self.definition.__name__}", arg_types)
         kwarg_types = {name: ts.infer_object_type(value) for name, value in kwargs.items()}
         hast_module = self.parse(arg_types, kwarg_types)
         signature = _get_signature(hast_module, func_name)
@@ -113,13 +149,21 @@ class JitFunction:
         opt = sir.OptimizationOptions(True, True, True, True)
         options = sir.CompileOptions(sir.TargetArch.X86, sir.OptimizationLevel.O3, opt)
         compiled_module = sir.CompiledModule(sir_module, options)
-        compiled_module.compile(True)
+        try:
+            compiled_module.compile(True)
+        except:
+            ir = compiled_module.get_stage_results()
+            raise
         ir = compiled_module.get_stage_results()
-        translated_args = [_translate_arg(arg) for arg in args]
-        out_args = _allocate_results(func_name, signature, compiled_module, args)
-        translated_out_args = [_translate_arg(arg) for arg in out_args]
+        translated_args = _translate_regular_args(args)
+        out_shapes = _get_result_shapes(func_name, ts.flatten_type(signature.result), compiled_module, args)
+        out_args = _allocate_results(ts.flatten_type(signature.result), out_shapes)
+        translated_out_args = [_translate_regular_arg(arg) for arg in out_args]
         results = compiled_module.invoke(func_name, *translated_args, *translated_out_args)
-        return _match_results_to_outs(results, out_args)
+        matched = _match_results_to_outs(results, out_args)
+        if not isinstance(matched, Sequence):
+            return matched
+        return ts.unflatten(matched, signature.result)
 
     def parse(self, arg_types: list[sir.Type], kwarg_types: dict[str, sir.Type]) -> hlast.Module:
         return parser.function_to_hlast(self.definition, arg_types, kwarg_types)

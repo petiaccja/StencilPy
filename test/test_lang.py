@@ -191,3 +191,86 @@ def test_attribute(use_jit):
         return helpers.CONSTANT
 
     assert fn(jit=use_jit) == helpers.CONSTANT
+
+
+def test_tuple_create(use_jit):
+    @func
+    def fn(a, b, c):
+        t = (a, (b, c))
+
+    assert fn(1, 2, 3, jit=use_jit) is None
+
+
+def test_tuple_get(use_jit):
+    @func
+    def fn(a, b, c):
+        t = (a, (b, c))
+        return t[1][0]
+
+    assert fn(1, 2, 3, jit=use_jit) == 2
+
+
+def test_tuple_arg(use_jit):
+    @func
+    def fn(t):
+        pass
+
+    assert fn((1, (2, 3)), jit=use_jit) is None
+
+
+def test_tuple_return(use_jit):
+    @func
+    def fn(a, b, c):
+        t = (a, (b, c))
+        return t
+
+    assert fn(1, 2, 3, jit=use_jit) == (1, (2, 3))
+
+
+def test_tuple_return_mrv(use_jit):
+    @func
+    def fn(a, b):
+        return a, b
+
+    assert fn(1, 2, jit=use_jit) == (1, 2)
+
+
+def test_tuple_arg_mixed(use_jit):
+    @func
+    def fn(t):
+        pass
+
+    a = Field([TDim], np.array([1, 2, 3]))
+    b = Field([TDim], np.array([4, 5, 6]))
+    c = 3.14
+    assert fn((a, b, c), jit=use_jit) is None
+
+
+def test_tuple_return_mixed(use_jit):
+    @func
+    def fn(a, b, c):
+        t = (a, b, c)
+        return t
+
+    a = Field([TDim], np.array([1, 2, 3]))
+    b = Field([TDim], np.array([4, 5, 6]))
+    c = 3.14
+    ra, rb, rc = fn(a, b, c, jit=use_jit)
+    assert all(ra.data == a.data)
+    assert all(rb.data == b.data)
+    assert rc == c
+
+
+def test_apply_mrv(use_jit):
+    @stencil
+    def sn(a: int, b: float) -> tuple[int, float]:
+        return a, b
+
+    @func
+    def fn(a: int, b: int, w: int, h: int):
+        return sn[TDim[w], UDim[h]](a, b)
+
+    ra, rb = fn(2, 3.14, 4, 3, jit=use_jit)
+
+    assert np.all(ra.data == 2)
+    assert np.all(rb.data == 3.14)

@@ -129,7 +129,12 @@ class AstTransformer(ast.NodeTransformer):
         args = [ensure_expr(self.visit(arg)) for arg in node.args]
         stencil = self.instantiate(callable_.definition, [arg.type_ for arg in args], False, dims)
         assert isinstance(stencil.type_, ts.StencilType)
-        type_ = ts.FieldType(stencil.type_.result, stencil.type_.dims)
+        result_types = ts.flatten_type(stencil.type_.result)
+        field_types = [ts.FieldType(t, stencil.type_.dims) for t in result_types]
+        if len(field_types) > 1:
+            type_ = ts.TupleType(field_types)
+        else:
+            type_ = field_types[0]
         return hlast.Apply(loc, type_, stencil.name, shape, args)
 
     def _visit_call_call(self, node: ast.Call) -> Optional[hlast.Call]:
@@ -352,6 +357,15 @@ class AstTransformer(ast.NodeTransformer):
             expr_types = [str(expr.type_) if hasattr(expr, "type_") else str(type(expr)) for expr in slice_exprs]
             str_types = ", ".join(expr_types)
             raise CompilationError(loc, f"field cannot be subscripted by object of type `({str_types})`")
+        elif isinstance(value.type_, ts.TupleType):
+            element = self.visit(node.slice)
+            if not isinstance(element, hlast.Constant) and isinstance(element.type_, (ts.IndexType, ts.IntegerType)):
+                raise CompilationError(loc, "tuples can only be subscripted with a constant integral")
+            index = int(element.value)
+            if index >= len(value.type_.elements):
+                raise CompilationError(loc, "tuples scubscript is out of bounds")
+            type_ = value.type_.elements[index]
+            return hlast.TupleExtract(loc, type_, value, index)
         raise CompilationError(loc, f"object of type {value.type_} be subscripted")
 
     def visit_Slice(self, node: ast.Slice) -> hlast.Slice:
@@ -387,6 +401,12 @@ class AstTransformer(ast.NodeTransformer):
     def visit_Pass(self, node: ast.Pass) -> hlast.Noop:
         loc = self.get_ast_loc(node)
         return hlast.Noop(loc, ts.void_t)
+
+    def visit_Tuple(self, node: ast.Tuple) -> hlast.TupleCreate:
+        loc = self.get_ast_loc(node)
+        elements = [ensure_expr(self.visit(e), loc=loc) for e in node.elts]
+        type_ = ts.TupleType([e.type_ for e in elements])
+        return hlast.TupleCreate(loc, type_, elements)
 
     #-----------------------------------
     # Utilities
