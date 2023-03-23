@@ -384,6 +384,10 @@ class AstTransformer(ast.NodeTransformer):
             raise CompilationError(loc, f"object has no attribute {node.attr}")
         raise CompilationError(loc, "expected a name or an attribute of a name")
 
+    def visit_Pass(self, node: ast.Pass) -> hlast.Noop:
+        loc = self.get_ast_loc(node)
+        return hlast.Noop(loc, ts.void_t)
+
     #-----------------------------------
     # Utilities
     #-----------------------------------
