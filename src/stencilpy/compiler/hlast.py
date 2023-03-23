@@ -147,6 +147,17 @@ class If(Expr):
 
 
 @dataclasses.dataclass
+class For(Expr):
+    start: Expr
+    stop: Expr
+    step: Expr
+    init: Optional[Expr]
+    loop_index: str
+    loop_carried: Optional[str]
+    body: list[Statement]
+
+
+@dataclasses.dataclass
 class Yield(Statement):
     value: Expr
 

@@ -171,6 +171,25 @@ class ShapeTransformer(SirOpTransformer):
 
         return ifop.get_results()
 
+    def visit_For(self, node: hlast.For) -> list[ops.Value]:
+        loc = as_sir_loc(node.location)
+
+        start = self.visit(node.start)
+        stop = self.visit(node.stop)
+        step = self.visit(node.step)
+        init = self.visit(node.init) if node.init else []
+        forop: ops.ForOp = self.insert_op(ops.ForOp(*start, *stop, *step, init, loc))
+
+        self.push_region(forop.get_body())
+        self.symtable.assign(node.loop_index, forop.get_region_arg(0))
+        if node.loop_carried:
+            self.symtable.assign(node.loop_carried, forop.get_region_arg(1))
+        for statement in node.body:
+            self.visit(statement)
+        self.pop_region()
+
+        return forop.get_results()
+
     def visit_Yield(self, node: hlast.Yield) -> list[ops.Value]:
         loc = as_sir_loc(node.location)
         values = self.visit(node.value)
