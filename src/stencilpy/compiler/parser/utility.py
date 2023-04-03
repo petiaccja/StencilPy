@@ -1,4 +1,4 @@
-from stencilpy.compiler import types as ts, hlast
+from stencilpy.compiler import types as ts, hlast, type_traits
 from stencilpy import concepts
 from stencilpy.compiler.symbol_table import SymbolTable
 
@@ -15,6 +15,7 @@ class FunctionSpecification:
     kwparam_types: dict[str, ts.Type]
     is_public: bool
     dims: Optional[list[concepts.Dimension]]
+    result: Optional[ts.Type] = None
 
 
 def get_source_code(definition: Callable):
@@ -29,7 +30,7 @@ def add_closure_vars_to_symtable(symtable: SymbolTable, closure_vars: Mapping[st
     for name, value in closure_vars.items():
         loc = concepts.Location.unknown()
         try:
-            type_ = ts.infer_object_type(value)
+            type_ = type_traits.from_object(value)
         except Exception:
             type_ = ts.VoidType()
         symtable.assign(name, hlast.ClosureVariable(loc, type_, name, value))

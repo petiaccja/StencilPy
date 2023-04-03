@@ -3,14 +3,15 @@ from stencilpy import concepts
 
 
 class NodeTransformer:
-    def visit(self, node: Any):
-        class_name = node.__class__.__name__
-        handler_name = f"visit_{class_name}"
-        if hasattr(self.__class__, handler_name):
-            return getattr(self.__class__, handler_name)(self, node)
-        self.on_invalid_node(node)
+    def visit(self, node: Any, **kwargs):
+        for cls in type(node).__mro__:
+            class_name = cls.__name__
+            handler_name = f"visit_{class_name}"
+            if hasattr(self.__class__, handler_name):
+                return getattr(self.__class__, handler_name)(self, node, **kwargs)
+        return self.generic_visit(node)
 
-    def on_invalid_node(self, node: Any):
+    def generic_visit(self, node: Any, **kwargs):
         loc = concepts.Location.unknown()
         if hasattr(node, "location") and isinstance(node.location, concepts.Location):
             loc = node.location

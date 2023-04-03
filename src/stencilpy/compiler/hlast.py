@@ -16,13 +16,13 @@ class Node:
 
 
 @dataclasses.dataclass
-class Expr(Node):
-    ...
-
-@dataclasses.dataclass
 class Statement(Node):
     ...
 
+
+@dataclasses.dataclass
+class Expr(Statement):
+    ...
 
 #-------------------------------------------------------------------------------
 # Enums
@@ -132,7 +132,7 @@ class SymbolRef(Expr):
 @dataclasses.dataclass
 class Assign(Statement):
     names: list[str]
-    values: list[Expr]
+    value: Expr
 
 
 #-------------------------------------------------------------------------------
@@ -167,14 +167,30 @@ class For(Expr):
     stop: Expr
     step: Expr
     init: Optional[Expr]
-    loop_index: str
-    loop_carried: Optional[str]
+    loop_index: Parameter
+    loop_carried: Optional[Parameter]
     body: list[Statement]
 
 
 @dataclasses.dataclass
 class Yield(Statement):
     value: Optional[Expr]
+
+
+@dataclasses.dataclass
+class IfStatement(Statement):
+    cond: Expr
+    then_body: list[Statement]
+    else_body: list[Statement]
+
+
+@dataclasses.dataclass
+class ForStatement(Statement):
+    start: Expr
+    stop: Expr
+    step: Expr
+    loop_index: Parameter
+    body: list[Statement]
 
 
 #-------------------------------------------------------------------------------

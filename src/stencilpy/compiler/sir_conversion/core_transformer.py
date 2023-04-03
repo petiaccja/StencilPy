@@ -4,8 +4,9 @@ from .basic_transformer import SirOpTransformer
 from stencilir import ops
 import stencilir as sir
 from stencilpy.compiler import hlast
-from stencilpy.compiler import types as ts
+from stencilpy.compiler import types as ts, type_traits
 from stencilpy import utility
+from stencilpy.error import *
 from stencilpy.utility import flatten, flatten_recursive
 from .utility import (
     as_sir_loc,
@@ -16,7 +17,9 @@ from .utility import (
     map_elementwise_shape,
     shape_func_name,
 )
-from typing import Optional
+from typing import Optional, Sequence
+import itertools
+
 
 
 class CoreTransformer(SirOpTransformer):
@@ -87,7 +90,7 @@ class CoreTransformer(SirOpTransformer):
             strides = [c1] * len(src_type.dimensions)
             return self.insert_op(ops.InsertSliceOp(src, dst, offsets, sizes, strides, loc)).get_result()
 
-        types = ts.flatten_type(node.value.type_) if node.value else []
+        types = type_traits.flatten(node.value.type_) if node.value else []
         values = self.visit(node.value) if node.value else []
         assert len(types) == len(values)
         function_body = self._get_enclosing_function_body()
@@ -110,16 +113,18 @@ class CoreTransformer(SirOpTransformer):
     def visit_Call(self, node: hlast.Call) -> list[ops.Value]:
         loc = as_sir_loc(node.location)
         name = node.name
+        results = type_traits.flatten(node.type_) if not isinstance(node.type_, ts.VoidType) else []
+        converted_results = [as_sir_type(t) for t in results]
         args = flatten(self.visit(arg) for arg in node.args)
         out_args = self._allocate_output_tensors(node, args)
-        return self.insert_op(ops.CallOp(name, 1, [*args, *out_args], loc)).get_results()
+        return self.insert_op(ops.CallOp(name, converted_results, [*args, *out_args], loc)).get_results()
 
     def visit_Apply(self, node: hlast.Apply) -> list[ops.Value]:
         loc = as_sir_loc(node.location)
         inputs = flatten(self.visit(arg) for arg in node.args)
         shape = [self.visit(size)[0] for dim, size in sorted(node.shape.items(), key=lambda x: x[0])]
         shape = [self.insert_op(ops.CastOp(size, sir.IndexType(), loc)).get_result() for size in shape]
-        result_types = ts.flatten_type(node.type_)
+        result_types = type_traits.flatten(node.type_)
         outputs: list[ops.Value] = []
         ndims = 0
         for t in result_types:
@@ -138,8 +143,18 @@ class CoreTransformer(SirOpTransformer):
         return self.symtable.lookup(node.name)
 
     def visit_Assign(self, node: hlast.Assign) -> list[ops.Value]:
-        for name, value in zip(node.names, node.values):
-            self.symtable.assign(name, self.visit(value))
+        values = self.visit(node.value)
+
+        if len(node.names) > 1:
+            if not isinstance(node.value.type_, ts.TupleType):
+                raise CompilationError(node.value.location, "expected a tuple expression for unpacking assignment")
+            structured = type_traits.unflatten(values, node.value.type_)
+            if len(node.names) != len(structured):
+                raise CompilationError(node.location, "number of names and unpacked values must be equal")
+            for name, value in zip(node.names, structured):
+                self.symtable.assign(name, flatten_recursive(value))
+        else:
+            self.symtable.assign(node.names[0], values)
         return []
 
     # -----------------------------------
@@ -150,7 +165,7 @@ class CoreTransformer(SirOpTransformer):
 
     def visit_TupleExtract(self, node: hlast.TupleExtract):
         values = self.visit(node.value)
-        structured = ts.unflatten(values, node.value.type_)
+        structured = type_traits.unflatten(values, node.value.type_)
         return flatten_recursive(structured[node.item])
 
     #-----------------------------------
@@ -221,18 +236,24 @@ class CoreTransformer(SirOpTransformer):
     def visit_If(self, node: hlast.If) -> list[ops.Value]:
         loc = as_sir_loc(node.location)
         cond = self.visit(node.cond)[0]
+        types = type_traits.flatten(node.type_)
 
-        ifop: ops.IfOp = self.insert_op(ops.IfOp(cond, 1, loc))
+        ifop: ops.IfOp = self.insert_op(ops.IfOp(cond, len(types), loc))
 
-        self.push_region(ifop.get_then_region())
-        for statement in node.then_body:
-            self.visit(statement)
-        self.pop_region()
+        def sc1():
+            self.push_region(ifop.get_then_region())
+            for statement in node.then_body:
+                self.visit(statement)
+            self.pop_region()
 
-        self.push_region(ifop.get_else_region())
-        for statement in node.else_body:
-            self.visit(statement)
-        self.pop_region()
+        def sc2():
+            self.push_region(ifop.get_else_region())
+            for statement in node.else_body:
+                self.visit(statement)
+            self.pop_region()
+
+        self.symtable.scope(sc1)
+        self.symtable.scope(sc2)
 
         return ifop.get_results()
 
@@ -243,15 +264,19 @@ class CoreTransformer(SirOpTransformer):
         stop = self.visit(node.stop)
         step = self.visit(node.step)
         init = self.visit(node.init) if node.init else []
-        forop: ops.ForOp = self.insert_op(ops.ForOp(*start, *stop, *step, init, loc))
+        init_types = type_traits.flatten(node.type_)
+        init_cast = [self.insert_op(ops.CastOp(v, as_sir_type(t), loc)).get_result() for v, t in zip(init, init_types)]
+        forop: ops.ForOp = self.insert_op(ops.ForOp(*start, *stop, *step, init_cast, loc))
 
-        self.push_region(forop.get_body())
-        self.symtable.assign(node.loop_index, forop.get_region_arg(0))
-        if node.loop_carried:
-            self.symtable.assign(node.loop_carried, forop.get_region_arg(1))
-        for statement in node.body:
-            self.visit(statement)
-        self.pop_region()
+        def sc():
+            self.push_region(forop.get_body())
+            self.symtable.assign(node.loop_index.name, [forop.get_region_arg(0)])
+            if node.loop_carried:
+                self.symtable.assign(node.loop_carried.name, forop.get_region_args()[1:])
+            for statement in node.body:
+                self.visit(statement)
+            self.pop_region()
+        self.symtable.scope(sc)
 
         return forop.get_results()
 
@@ -292,11 +317,14 @@ class CoreTransformer(SirOpTransformer):
         stop_adjs: list[ops.Value] = []
         sizes: list[ops.Value] = []
         for start, stop, step, length, trivial in zip(starts, stops, steps, lengths, trivials):
+            index_t = sir.IndexType()
             adjust_func = "__adjust_slice_trivial" if trivial else "__adjust_slice"
-            adj = self.insert_op(ops.CallOp(adjust_func, 2, [start, stop, step, length], loc)).get_results()
+            adj = self.insert_op(
+                ops.CallOp(adjust_func, [index_t, index_t], [start, stop, step, length], loc)
+            ).get_results()
             start_adjs.append(adj[0])
             stop_adjs.append(adj[1])
-            size = self.insert_op(ops.CallOp("__slice_size", 1, [adj[0], adj[1], step], loc)).get_results()[0]
+            size = self.insert_op(ops.CallOp("__slice_size", [index_t], [adj[0], adj[1], step], loc)).get_results()[0]
             sizes.append(size)
 
         return self.insert_op(ops.ExtractSliceOp(*source, start_adjs, sizes, steps, loc)).get_results()
@@ -337,8 +365,8 @@ class CoreTransformer(SirOpTransformer):
     # Utility functions
     # -----------------------------------
     def _get_function_type(self, node: hlast.Function | hlast.Stencil) -> sir.FunctionType:
-        flat_inputs = flatten(ts.flatten_type(p.type_) for p in node.parameters)
-        flat_outputs = ts.flatten_type(node.result) if not isinstance(node.result, ts.VoidType) else []
+        flat_inputs = flatten(type_traits.flatten(p.type_) for p in node.parameters)
+        flat_outputs = type_traits.flatten(node.result) if not isinstance(node.result, ts.VoidType) else []
         inputs = [as_sir_type(t) for t in flat_inputs]
         outputs = [as_sir_type(t) for t in flat_outputs]
         out_args = []
@@ -351,7 +379,7 @@ class CoreTransformer(SirOpTransformer):
         region_args = body.get_args()
         offset = 0
         for p in node.parameters:
-            num_args = len(ts.flatten_type(p.type_))
+            num_args = len(type_traits.flatten(p.type_))
             values.append(region_args[offset:(offset + num_args)])
             offset += num_args
         return values
@@ -365,15 +393,31 @@ class CoreTransformer(SirOpTransformer):
         return body
 
     def _allocate_output_tensors(self, node: hlast.Call, args: list[ops.Value]) -> list[ops.Value]:
-        if not isinstance(node.type_, ts.FieldType):
-            return []
         loc = as_sir_loc(node.location)
         name = shape_func_name(node.name)
-        num_outs = len(node.type_.dimensions)
-        arg_shapes = flatten(self._get_shape_or_empty(arg, narg.type_, loc) for arg, narg in zip(args, node.args))
-        out_shape = self.insert_op(ops.CallOp(name, num_outs, arg_shapes, loc)).get_results()
-        element_type = as_sir_type(node.type_.element_type)
-        return [self.insert_op(ops.AllocTensorOp(element_type, out_shape, loc)).get_result()]
+
+        arg_types = type_traits.flatten(ts.TupleType([arg.type_ for arg in node.args]))
+        index_args = flatten_recursive(
+            self._get_shape_or_empty(arg, type_, loc) if isinstance(type_, ts.FieldLikeType) else arg
+            for arg, type_ in zip(args, arg_types)
+        )
+
+        results = type_traits.flatten(node.type_) if not isinstance(node.type_, ts.VoidType) else []
+        index_results = flatten_recursive([
+            [ts.index_t]*len(t.dimensions) if isinstance(t, ts.FieldLikeType) else  []
+            for t in results
+        ])
+        converted_results = [as_sir_type(t) for t in index_results]
+
+        flat_shapes = self.insert_op(ops.CallOp(name, converted_results, index_args, loc)).get_results()
+        field_results = [t for t in results if isinstance(t, ts.FieldLikeType)]
+        ndims = [len(t.dimensions) for t in field_results]
+        offsets = [v - ndims[0] for v in itertools.accumulate(ndims)]
+        shapes = [tuple(flat_shapes[off:off + nd]) for off, nd in zip(offsets, ndims)]
+        return [
+            self.insert_op(ops.AllocTensorOp(as_sir_type(t.element_type), shape, loc)).get_result()
+            for t, shape in zip(field_results, shapes)
+        ]
 
     def _get_shape_or_empty(self, source: ops.Value, source_type: ts.Type, loc: ops.Location):
         if isinstance(source_type, ts.FieldLikeType):

@@ -1,13 +1,8 @@
 import abc
-import ctypes
 import dataclasses
 
 from stencilpy import concepts
-from stencilpy import storage
-from typing import Any, Sequence, Iterable
-import numpy as np
-import numpy.typing as np_typing
-from stencilpy import utility
+from typing import Sequence
 
 
 @dataclasses.dataclass
@@ -140,78 +135,6 @@ class TupleType(Type):
 
     def __str__(self):
         return f"({', '.join([str(t) for t in self.elements])})"
-
-
-def infer_object_type(arg: Any) -> Type:
-    def translate_dtype(dtype: np.typing.DTypeLike):
-        if dtype.kind == 'i':
-            return IntegerType(8 * dtype.itemsize, True)
-        if dtype.kind == 'u':
-            return IntegerType(8 * dtype.itemsize, False)
-        if dtype.kind == 'f':
-            return FloatType(8 * dtype.itemsize)
-        if dtype.kind == 'b':
-            return IntegerType(1, True)
-        raise ValueError("unknown dtype")
-
-    if isinstance(arg, storage.Field):
-        element_type = translate_dtype(arg.data.dtype)
-        dims = arg.sorted_dimensions
-        return FieldType(element_type, dims)
-    elif isinstance(arg, storage.Connectivity):
-        element_type = translate_dtype(arg.data.dtype)
-        return ConnectivityType(element_type, arg.origin_dimension, arg.neighbor_dimension, arg.element_dimension)
-    elif isinstance(arg, tuple):
-        elements = [infer_object_type(e) for e in arg]
-        return TupleType(elements)
-    else:
-        dtype = np.dtype(type(arg))
-        return translate_dtype(dtype)
-
-
-def as_numpy_type(type_: Type) -> np_typing.DTypeLike:
-    if isinstance(type_, IntegerType):
-        if type_.signed:
-            if type_.width == 1: return np.bool_
-            if type_.width == 8: return np.int8
-            if type_.width == 16: return np.int16
-            if type_.width == 32: return np.int32
-            if type_.width == 64: return np.int64
-        else:
-            if type_.width == 1: return np.bool_
-            if type_.width == 8: return np.uint8
-            if type_.width == 16: return np.uint16
-            if type_.width == 32: return np.uint32
-            if type_.width == 64: return np.uint64
-    if isinstance(type_, FloatType):
-        if type_.width:
-            if type_.width == 16: return np.float16
-            if type_.width == 32: return np.float32
-            if type_.width == 64: return np.float64
-    if isinstance(type_, IndexType):
-        if ctypes.sizeof(ctypes.c_void_p) == 4: return np.int32
-        if ctypes.sizeof(ctypes.c_void_p) == 8: return np.int64
-    raise ValueError(f"cannot convert type {type_} to numpy dtype-like")
-
-
-def flatten_type(type_: Type) -> list[Type]:
-    if isinstance(type_, TupleType):
-        return utility.flatten(flatten_type(elem_type) for elem_type in type_.elements)
-    return [type_]
-
-
-def _unflatten_helper(values: Sequence, type_: Type):
-    if not isinstance(type_, TupleType):
-        return values[0], values[1:]
-
-    elements = []
-    for elem_type in type_.elements:
-        element, values = _unflatten_helper(values, elem_type)
-        elements.append(element)
-    return tuple(elements), values
-
-def unflatten(values: Sequence, type_: Type):
-    return _unflatten_helper(values, type_)[0]
 
 
 void_t = VoidType()

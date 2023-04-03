@@ -3,12 +3,10 @@ import ast
 from typing import Optional, cast, Callable
 from collections.abc import Sequence
 
-from stencilpy.compiler import types as ts
 from stencilpy.error import *
 from stencilpy import concepts
 from stencilpy.compiler.symbol_table import SymbolTable
-from stencilpy.compiler import hlast
-from stencilpy.compiler import utility
+from stencilpy.compiler import types as ts, hlast, utility, type_traits
 from .utility import FunctionSpecification, get_source_code, add_closure_vars_to_symtable
 from .builtin_transformers import BUILTIN_MAPPING
 from .verification import ensure_expr, ensure_type, ensure_dimension, ensure_function, ensure_stencil, ensure_builtin
@@ -69,11 +67,7 @@ class AstTransformer(ast.NodeTransformer):
 
             statements = [self.visit(statement) for statement in node.body]
 
-            result: Optional[ts.Type] = None
-            for statement in statements:
-                if isinstance(statement, hlast.Return):
-                    result = statement.value.type_
-                    break
+            result = spec.result
             if result is None:
                 statements.append(hlast.Return(loc, ts.void_t, None))
                 result = ts.void_t
@@ -91,6 +85,13 @@ class AstTransformer(ast.NodeTransformer):
         loc = self.get_ast_loc(node)
         value = ensure_expr(self.visit(node.value), loc=loc)
         type_ = ts.VoidType()
+
+        spec = self._get_enclosing_function()
+        if not spec:
+            raise CompilationError(loc, "return statement outside of function")
+        if not spec.result:
+            spec.result = value.type_
+
         return hlast.Return(loc, type_, value)
 
     def visit_Call(self, node: ast.Call) -> hlast.Expr:
@@ -129,7 +130,7 @@ class AstTransformer(ast.NodeTransformer):
         args = [ensure_expr(self.visit(arg)) for arg in node.args]
         stencil = self.instantiate(callable_.definition, [arg.type_ for arg in args], False, dims)
         assert isinstance(stencil.type_, ts.StencilType)
-        result_types = ts.flatten_type(stencil.type_.result)
+        result_types = type_traits.flatten(stencil.type_.result)
         field_types = [ts.FieldType(t, stencil.type_.dims) for t in result_types]
         if len(field_types) > 1:
             type_ = ts.TupleType(field_types)
@@ -144,10 +145,21 @@ class AstTransformer(ast.NodeTransformer):
         except:
             return None
         args = [ensure_expr(self.visit(arg)) for arg in node.args]
-        func = self.instantiate(callable_.definition, [arg.type_ for arg in args], False)
-        assert isinstance(func.type_, ts.FunctionType)
-        type_ = func.type_.result
-        return hlast.Call(loc, type_, func.name, args)
+
+        arg_types = [arg.type_ for arg in args]
+        mangled_name = self._get_mangled_name(callable_.definition, arg_types, None)
+        spec = self._get_enclosing_function(mangled_name)
+        if spec:
+            callee = spec.mangled_name
+            type_ = spec.result
+            if not type_:
+                raise CompilationError(loc, "recursive function must have a non-recursive return statement first")
+        else:
+            func = self.instantiate(callable_.definition, arg_types, None)
+            callee = func.name
+            assert isinstance(func.type_, ts.FunctionType)
+            type_ = func.type_.result
+        return hlast.Call(loc, type_, callee, args)
 
     def _visit_call_meta(self, node: ast.Call) -> Optional[Any]:
         try:
@@ -157,6 +169,52 @@ class AstTransformer(ast.NodeTransformer):
             return None
         args = [self.visit(arg) for arg in node.args]
         return func(*args, is_jit=True)
+
+    #-----------------------------------
+    # Control flow
+    #-----------------------------------
+
+    def visit_If(self, node: ast.If) -> hlast.IfStatement:
+        loc = self.get_ast_loc(node)
+        type_ = ts.void_t
+        cond = self.visit(node.test)
+        then_body = [self.visit(stmt) for stmt in node.body]
+        else_body = [self.visit(stmt) for stmt in node.orelse]
+        return hlast.IfStatement(loc, type_, cond, then_body, else_body)
+
+    def visit_For(self, node: ast.For) -> hlast.ForStatement:
+        loc = self.get_ast_loc(node)
+
+        def as_index(value: hlast.Expr):
+            return hlast.Cast(loc, ts.index_t, value, ts.index_t)
+
+        if node.orelse:
+            raise CompilationError(loc, "else body for loops is not supported")
+        if not isinstance(node.target, ast.Name):
+            raise CompilationError(self.get_ast_loc(node.target), "expected an identifier")
+        if (
+                not isinstance(node.iter, ast.Call)
+                or not isinstance(node.iter.func, ast.Name)
+                or not node.iter.func.id == "range"
+        ):
+            raise CompilationError(self.get_ast_loc(node.iter), "expected a call to `range`")
+
+        type_ = ts.void_t
+        range = node.iter.args
+        c0 = hlast.Constant(loc, ts.index_t, 0)
+        c1 = hlast.Constant(loc, ts.index_t, 1)
+        if len(range) == 1:
+            start, stop, step = c0, self.visit(range[0]), c1
+        elif len(range) == 2:
+            start, stop, step = self.visit(range[0]), self.visit(range[1]), c1
+        elif len(range) == 3:
+            start, stop, step = self.visit(range[0]), self.visit(range[1]), self.visit(range[2])
+        else:
+            raise CompilationError(self.get_ast_loc(node.iter), "range function expects 1, 2, or 3 arguments")
+        loop_var = hlast.Parameter(self.get_ast_loc(node.target), ts.index_t, node.target.id)
+        self.symtable.assign(loop_var.name, loop_var)
+        body = [self.visit(stmt) for stmt in node.body]
+        return hlast.ForStatement(loc, type_, as_index(start), as_index(stop), as_index(step), loop_var, body)
 
     #-----------------------------------
     # Symbols
@@ -185,7 +243,7 @@ class AstTransformer(ast.NodeTransformer):
         names = [target.id for target in node.targets]
         self.symtable.assign(names[0], value)
         if isinstance(value, hlast.Node):
-            return hlast.Assign(loc, ts.void_t, names, [value])
+            return hlast.Assign(loc, ts.void_t, names, value)
         else:
             return hlast.Noop(loc, ts.void_t)
 
@@ -198,7 +256,7 @@ class AstTransformer(ast.NodeTransformer):
         name = node.target.id
         self.symtable.assign(name, value.type_)
         if isinstance(value, hlast.Node):
-            return hlast.Assign(loc, ts.VoidType(), [name], [value])
+            return hlast.Assign(loc, ts.VoidType(), [name], value)
         else:
             return hlast.Noop(loc, ts.void_t)
 
@@ -209,7 +267,7 @@ class AstTransformer(ast.NodeTransformer):
     def visit_Constant(self, node: ast.Constant) -> hlast.Constant:
         loc = self.get_ast_loc(node)
         try:
-            type_ = ts.infer_object_type(node.value)
+            type_ = type_traits.from_object(node.value)
             value = node.value
             return hlast.Constant(loc, type_, value)
         except Exception as ex:
@@ -222,8 +280,12 @@ class AstTransformer(ast.NodeTransformer):
         func = self.visit(node.op)
 
         def builder(args: list[hlast.Expr]) -> hlast.Expr:
-            type_ = args[0].type_  # TODO: promote to common type
-            return hlast.ArithmeticOperation(loc, type_, args[0], args[1], func)
+            arg_types = [arg.type_ for arg in args]
+            type_ = type_traits.common_type(*arg_types)
+            assert type_
+            lhs = hlast.Cast(loc, type_, args[0], type_)
+            rhs = hlast.Cast(loc, type_, args[1], type_)
+            return hlast.ArithmeticOperation(loc, type_, lhs, rhs, func)
 
         lhs_type = ensure_type(lhs, (ts.FieldType, ts.NumberType))
         rhs_type = ensure_type(rhs, (ts.FieldType, ts.NumberType))
@@ -234,7 +296,9 @@ class AstTransformer(ast.NodeTransformer):
         lhs_dimensions = lhs_type.dimensions if is_lhs_field else []
         rhs_dimensions = rhs_type.dimensions if is_rhs_field else []
         if is_lhs_field or is_rhs_field:
-            element_type = lhs_element_type  # TODO: promote to common type
+            element_type = type_traits.common_type(lhs_element_type, rhs_element_type)
+            if not element_type:
+                raise ArgumentCompatibilityError(loc, "binop", [lhs_type, rhs_type])
             dimensions = sorted(list(set(lhs_dimensions) | set(rhs_dimensions)))
             type_ = ts.FieldType(element_type, dimensions)
             return hlast.ElementwiseOperation(loc, type_, [lhs, rhs], builder)
@@ -248,7 +312,8 @@ class AstTransformer(ast.NodeTransformer):
 
         def builder(args: list[hlast.Expr]) -> hlast.Expr:
             args_names = [f"__cmp_operand{i}" for i in range(len(args))]
-            args_assign = hlast.Assign(loc, ts.VoidType(), args_names, args)
+            args_tuple = hlast.TupleCreate(loc, ts.TupleType([arg.type_ for arg in args]), args)
+            args_assign = hlast.Assign(loc, ts.VoidType(), args_names, args_tuple)
             args_refs = [hlast.SymbolRef(loc, v.type_, name) for v, name in zip(args, args_names)]
 
             c_true = hlast.Constant(loc, ts.bool_t, 1)
@@ -258,6 +323,9 @@ class AstTransformer(ast.NodeTransformer):
                 func = funcs[i]
                 lhs = args_refs[i]
                 rhs = args_refs[i + 1]
+                type_ = type_traits.common_type(lhs.type_, rhs.type_)
+                lhs = hlast.Cast(loc, type_, lhs, type_)
+                rhs = hlast.Cast(loc, type_, rhs, type_)
                 cmp = hlast.ComparisonOperation(loc, ts.bool_t, lhs, rhs, func)
                 expr = hlast.If(
                     loc, ts.bool_t, cmp,
@@ -411,12 +479,6 @@ class AstTransformer(ast.NodeTransformer):
     #-----------------------------------
     # Utilities
     #-----------------------------------
-    def _visit_getitem_expr(self, node: ast.AST):
-        if isinstance(node, ast.Tuple):
-            return tuple(self.visit(element) for element in node.elts)
-        slices = self.visit(node)
-        return slices if isinstance(slices, tuple) else (slices,)
-
     def instantiate(
             self,
             definition: Callable,
@@ -424,11 +486,10 @@ class AstTransformer(ast.NodeTransformer):
             is_public: bool,
             dims: Optional[list[concepts.Dimension]] = None
     ) -> hlast.Function | hlast.Stencil:
-        name = definition.__name__
-        module = definition.__module__
-        mangled_name = utility.mangle_name(f"{module}.{name}", arg_types, dims)
-        if mangled_name in self.instantiations:
-            return self.instantiations[mangled_name]
+        mangled_name = self._get_mangled_name(definition, arg_types, dims)
+        func = self._get_instantiated_function(mangled_name)
+        if func:
+            return func
 
         def sc():
             source_code, file, start_line, start_col = get_source_code(definition)
@@ -450,6 +511,31 @@ class AstTransformer(ast.NodeTransformer):
         self.instantiations[instantiation.name] = self.symtable.scope(sc)
         return instantiation
 
+    def _get_mangled_name(self, definition: Callable, arg_types: list[ts.Type], dims: list[concepts.Dimension]):
+        name = definition.__name__
+        module = definition.__module__
+        return utility.mangle_name(f"{module}.{name}", arg_types, dims)
+
+    def _get_enclosing_function(self, mangled_name: Optional[str] = None) -> Optional[FunctionSpecification]:
+        for info in self.symtable.infos():
+            if isinstance(info, FunctionSpecification):
+                if mangled_name and info.mangled_name == mangled_name:
+                    return info
+                if not mangled_name:
+                    return info
+        return None
+
+    def _get_instantiated_function(self, mangled_name: str) -> Optional[hlast.Function | hlast.Stencil]:
+        if mangled_name in self.instantiations:
+            return self.instantiations[mangled_name]
+        return None
+
+    def _visit_getitem_expr(self, node: ast.AST):
+        if isinstance(node, ast.Tuple):
+            return tuple(self.visit(element) for element in node.elts)
+        slices = self.visit(node)
+        return slices if isinstance(slices, tuple) else (slices,)
+
     def _process_closure_value(self, value: Any, location: concepts.Location) -> Any:
         # Stencils, functions
         if isinstance(value, (concepts.Function, concepts.Stencil)):
@@ -468,7 +554,7 @@ class AstTransformer(ast.NodeTransformer):
             return value
         # Constant expressions
         try:
-            type_ = ts.infer_object_type(value)
+            type_ = type_traits.from_object(value)
             if isinstance(type_, (ts.IndexType, ts.IntegerType, ts.FloatType)):
                 return hlast.Constant(location, type_, value)
         except Exception:

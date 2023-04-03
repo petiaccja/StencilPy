@@ -1,4 +1,4 @@
-from stencilpy.compiler import types as ts
+from stencilpy.compiler import types as ts, type_traits
 from typing import Optional
 from stencilpy import concepts
 
@@ -22,7 +22,7 @@ def format_type_short(type_: ts.Type):
 
 
 def mangle_name(name: str, param_types: list[ts.Type], dims: Optional[list[concepts.Dimension]] = None):
-    flat_types = ts.flatten_type(ts.TupleType(param_types))
+    flat_types = type_traits.flatten(ts.TupleType(param_types))
     terms = name.split(".")
     base_name = "".join([f"{len(term)}{term}" for term in terms])
     param_codes = [format_type_short(type_) for type_ in flat_types]
