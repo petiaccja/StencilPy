@@ -362,15 +362,24 @@ class AstTransformer(ast.NodeTransformer):
         if isinstance(node.op, ast.UAdd):
             return value
         elif isinstance(node.op, ast.USub):
+            if isinstance(value, hlast.Constant):
+                value.value = -value.value
+                return value
             sign_val = -1.0 if isinstance(element_type, ts.FloatType) else -1
             c_sign = hlast.Constant(loc, element_type, sign_val)
             return hlast.ArithmeticOperation(loc, value_type, c_sign, value, hlast.ArithmeticFunction.MUL)
         elif isinstance(node.op, ast.Invert):
+            if isinstance(value, hlast.Constant):
+                value.value = ~value.value
+                return value
             if not isinstance(element_type, (ts.IndexType, ts.IntegerType)):
                 raise ArgumentCompatibilityError(loc, "bit inversion", [element_type])
             c_bitmask = hlast.Constant(loc, element_type, -1)
             return hlast.ArithmeticOperation(loc, value_type, c_bitmask, value, hlast.ArithmeticFunction.BIT_XOR)
         elif isinstance(node.op, ast.Not):
+            if isinstance(value, hlast.Constant):
+                value.value = not value.value
+                return value
             bool_t = ts.IntegerType(1, True)
             compare_val = 0.0 if isinstance(element_type, ts.FloatType) else 0
             c_compare = hlast.Constant(loc, element_type, compare_val)
@@ -378,6 +387,26 @@ class AstTransformer(ast.NodeTransformer):
             boolified = hlast.ComparisonOperation(loc, bool_t, value, c_compare, hlast.ComparisonFunction.NEQ)
             return hlast.ArithmeticOperation(loc, bool_t, c_bitmask, boolified, hlast.ArithmeticFunction.BIT_XOR)
         raise CompilationError(loc, f"unary operator {type(node.op)} not implemented")
+
+    def visit_BoolOp(self, node: ast.BoolOp) -> hlast.Expr:
+        loc = self.get_ast_loc(node)
+        values = [ensure_expr(self.visit(value)) for value in node.values]
+        is_and = isinstance(node.op, ast.And)
+        c_false = hlast.Constant(loc, ts.bool_t, False)
+        c_true = hlast.Constant(loc, ts.bool_t, True)
+        expr = c_true if is_and else c_false
+
+        for value in reversed(values):
+            if value.type_ != ts.bool_t:
+                raise CompilationError(loc, "operands to boolean logical operators must be booleans")
+            expr = hlast.If(
+                loc,
+                ts.bool_t,
+                value,
+                [hlast.Yield(loc, ts.void_t, expr) if is_and else hlast.Yield(loc, ts.void_t, c_true)],
+                [hlast.Yield(loc, ts.void_t, c_false) if is_and else hlast.Yield(loc, ts.void_t, expr)]
+            )
+        return expr
 
     def visit_Add(self, node: ast.Add) -> Any: return hlast.ArithmeticFunction.ADD
     def visit_Sub(self, node: ast.Add) -> Any: return hlast.ArithmeticFunction.SUB
@@ -408,7 +437,7 @@ class AstTransformer(ast.NodeTransformer):
         if isinstance(value, concepts.Dimension):
             slice_expr = self.visit(node.slice)
             if isinstance(slice_expr, hlast.Expr):
-                return hlast.Size(value, slice_expr)
+                return hlast.Size(loc, slice_expr.type_, value, slice_expr)
             elif isinstance(slice_expr, hlast.Slice):
                 return hlast.Slice(value, slice_expr.lower, slice_expr.upper, slice_expr.step)
             raise CompilationError(loc, f"dimension cannot be subscripted by object of type `{slice_expr.type_}`")
@@ -431,9 +460,24 @@ class AstTransformer(ast.NodeTransformer):
                 raise CompilationError(loc, "tuples can only be subscripted with a constant integral")
             index = int(element.value)
             if index >= len(value.type_.elements):
-                raise CompilationError(loc, "tuples scubscript is out of bounds")
+                raise CompilationError(loc, "tuples subscript is out of bounds")
             type_ = value.type_.elements[index]
             return hlast.TupleExtract(loc, type_, value, index)
+        elif isinstance(value.type_, ts.NDIndexType):
+            element = self.visit(node.slice)
+            if isinstance(element, concepts.Dimension):
+                if element not in value.type_.dims:
+                    raise CompilationError(loc, f"dimension {element} not part of {value.type_}")
+                return hlast.Extract(loc, ts.index_t, value, element)
+            elif isinstance(element, hlast.TupleCreate):
+                offset: dict[concepts.Dimension, int] = {}
+                for off in element.elements:
+                    if not isinstance(off, hlast.Size):
+                        raise CompilationError(loc, "expected dimensioned sizes")
+                    if not isinstance(off.size, hlast.Constant):
+                        raise CompilationError(off.size.location, "expected an integer literal")
+                    offset[off.dimension] = off.size.value
+                return hlast.Jump(loc, value.type_, value, offset)
         raise CompilationError(loc, f"object of type {value.type_} be subscripted")
 
     def visit_Slice(self, node: ast.Slice) -> hlast.Slice:

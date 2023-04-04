@@ -20,16 +20,35 @@ def laplacian(u: Field) -> Field:
     return 4.0 * center - (left + right + bottom + top)
 
 
+@stencil
+def apply_bcs_sn(central: Field, x_size: int, y_size: int) -> Field:
+    idx = index()
+    if 0 < idx[XDim] <= x_size and 0 < idx[YDim] <= y_size:
+        offset = idx[XDim[-1], YDim[-1]]
+        return central[offset]
+    elem_t = element_type(typeof(central))
+    return cast(0.0, elem_t)
+
+@func
+def apply_bcs(central: Field) -> Field:
+    x_size = shape(central, XDim)
+    y_size = shape(central, YDim)
+    return apply_bcs_sn[XDim[x_size + 2], YDim[y_size + 2]](central, x_size, y_size)
+
+
 @func
 def advance(u: Field) -> Field:
-    central = laplacian(u)
-    boundary_left = central[XDim[0], :]
-    boundary_right = central[XDim[-1], :]
-    boundary_bottom = central[:, YDim[0]]
-    boundary_top = central[:, YDim[-1]]
-    boundary_bottomleft = central[XDim[0], YDim[0]]
-    boundary_bottomright = central[XDim[-1], YDim[0]]
-    boundary_topleft = central[XDim[0], YDim[-1]]
-    boundary_topright = central[XDim[-1], YDim[-1]]
+    dudt = laplacian(u)
+    central = u[XDim[1:-1], YDim[1:-1]]
+    updated = central - 0.05 * dudt
+    return apply_bcs(updated)
+
+
+def test_heat_eq():
+    data = np.random.random(size=(20, 20))
+    u = Field([XDim, YDim], data)
+    for i in range(0, 10):
+        u = advance(u, jit=True)
+    assert u.data.shape == data.shape
 
 

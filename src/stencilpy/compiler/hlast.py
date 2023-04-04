@@ -69,7 +69,7 @@ class Slice:
 
 
 @dataclasses.dataclass
-class Size:
+class Size(Expr):
     dimension: Dimension
     size: Expr
 
@@ -284,6 +284,18 @@ class Exchange(Expr):
     value: Expr
     old_dim: Dimension
     new_dim: Dimension
+
+
+@dataclasses.dataclass
+class Extract(Expr):
+    index: Expr
+    dim: Dimension
+
+
+@dataclasses.dataclass
+class Jump(Expr):
+    index: Expr
+    offset: dict[Dimension, int]
 
 
 @dataclasses.dataclass

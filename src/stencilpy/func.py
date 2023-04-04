@@ -146,7 +146,7 @@ class JitFunction:
         hast_module = self.parse(arg_types, kwarg_types)
         signature = _get_signature(hast_module, func_name)
         sir_module = sir_conversion.hlast_to_sir(hast_module)
-        opt = sir.OptimizationOptions(True, True, True, True)
+        opt = sir.OptimizationOptions(False, False, False, True)
         options = sir.CompileOptions(sir.TargetArch.X86, sir.OptimizationLevel.O3, opt)
         compiled_module = sir.CompiledModule(sir_module, options)
         try:

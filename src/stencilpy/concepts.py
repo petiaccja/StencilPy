@@ -1,3 +1,4 @@
+import copy
 import dataclasses
 import typing
 from typing import Optional, Callable, Any
@@ -50,6 +51,17 @@ class Slice:
 @dataclasses.dataclass
 class Index:
     values: dict[Dimension, int]
+
+    def __getitem__(self, item: Dimension | tuple[Slice, ...]):
+        if isinstance(item, Dimension):
+            return self.values[item]
+        elif isinstance(item, Slice):
+            return self[item,]
+        elif isinstance(item, tuple):
+            new_values = copy.deepcopy(self.values)
+            for slc in item:
+                new_values[slc.dimension] = new_values[slc.dimension] + slc.slice
+            return Index(new_values)
 
 
 @dataclasses.dataclass
