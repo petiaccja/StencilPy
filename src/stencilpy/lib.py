@@ -74,8 +74,8 @@ def remap_domain(is_jit: bool, source: storage.Field | hlast.Expr, conn: storage
     src_dims = list(set(src_type.dimensions) - {conn_type.neighbor_dimension})
     if is_jit:
         return (
-            *[hlast.Size(dim, hlast.Shape(loc, ts.index_t, source, dim)) for dim in src_dims],
-            *[hlast.Size(dim, hlast.Shape(loc, ts.index_t, conn, dim)) for dim in conn_type.dimensions],
+            *[hlast.Size(loc, ts.index_t, dim, hlast.Shape(loc, ts.index_t, source, dim)) for dim in src_dims],
+            *[hlast.Size(loc, ts.index_t, dim, hlast.Shape(loc, ts.index_t, conn, dim)) for dim in conn_type.dimensions],
         )
     else:
         return (
@@ -103,7 +103,7 @@ def sparsity_domain(is_jit: bool, conn: storage.Connectivity | hlast.Expr):
     assert isinstance(conn_type, ts.ConnectivityType)
     if is_jit:
         return (
-            *[hlast.Size(dim, hlast.Shape(loc, ts.index_t, conn, dim)) for dim in conn_type.dimensions],
+            *[hlast.Size(loc, ts.index_t, dim, hlast.Shape(loc, ts.index_t, conn, dim)) for dim in conn_type.dimensions],
         )
     else:
         return (
