@@ -131,6 +131,8 @@ def _get_signature(hast_module: hlast.Module, func_name: str) -> ts.FunctionType
 @dataclasses.dataclass
 class JitFunction:
     definition: Callable
+    runtime_cache: dict[str, tuple[ts.FunctionType, sir.CompiledModule]]\
+        = dataclasses.field(init=False, repr=False, default_factory=lambda: {})
 
     def __call__(self, *args, **kwargs):
         use_jit = False
@@ -141,10 +143,29 @@ class JitFunction:
 
     def call_jit(self, *args, **kwargs):
         arg_types = [type_traits.from_object(arg) for arg in args]
-        func_name = cutil.mangle_name(f"{self.definition.__module__}.{self.definition.__name__}", arg_types)
+        mangled_name = cutil.mangle_name(cutil.get_qualified_name(self.definition), arg_types)
+        if mangled_name in self.runtime_cache:
+            function_type, compiled_module = self.runtime_cache[mangled_name]
+        else:
+            function_type, compiled_module = self.compile_jit_module(*args, **kwargs)
+            self.runtime_cache[mangled_name] = (function_type, compiled_module)
+
+        translated_args = _translate_regular_args(args)
+        out_shapes = _get_result_shapes(mangled_name, type_traits.flatten(function_type.result), compiled_module, args)
+        out_args = _allocate_results(type_traits.flatten(function_type.result), out_shapes)
+        translated_out_args = [_translate_regular_arg(arg) for arg in out_args]
+        results = compiled_module.invoke(mangled_name, *translated_args, *translated_out_args)
+        matched = _match_results_to_outs(results, out_args)
+        if not isinstance(matched, Sequence):
+            return matched
+        return type_traits.unflatten(matched, function_type.result)
+
+    def compile_jit_module(self, *args, **kwargs):
+        arg_types = [type_traits.from_object(arg) for arg in args]
+        mangled_name = cutil.mangle_name(cutil.get_qualified_name(self.definition), arg_types)
         kwarg_types = {name: type_traits.from_object(value) for name, value in kwargs.items()}
         hast_module = self.parse(arg_types, kwarg_types)
-        signature = _get_signature(hast_module, func_name)
+        function_type = _get_signature(hast_module, mangled_name)
         sir_module = sir_conversion.hlast_to_sir(hast_module)
         opt = sir.OptimizationOptions(True, True, True, True)
         options = sir.CompileOptions(sir.TargetArch.X86, sir.OptimizationLevel.O3, opt)
@@ -155,15 +176,7 @@ class JitFunction:
             ir = compiled_module.get_stage_results()
             raise
         ir = compiled_module.get_stage_results()
-        translated_args = _translate_regular_args(args)
-        out_shapes = _get_result_shapes(func_name, type_traits.flatten(signature.result), compiled_module, args)
-        out_args = _allocate_results(type_traits.flatten(signature.result), out_shapes)
-        translated_out_args = [_translate_regular_arg(arg) for arg in out_args]
-        results = compiled_module.invoke(func_name, *translated_args, *translated_out_args)
-        matched = _match_results_to_outs(results, out_args)
-        if not isinstance(matched, Sequence):
-            return matched
-        return type_traits.unflatten(matched, signature.result)
+        return function_type, compiled_module
 
     def parse(self, arg_types: list[sir.Type], kwarg_types: dict[str, sir.Type]) -> hlast.Module:
         return parser.function_to_hlast(self.definition, arg_types, kwarg_types)

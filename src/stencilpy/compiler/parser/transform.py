@@ -28,7 +28,8 @@ def function_to_hlast(
     add_closure_vars_to_symtable(symtable, closure_vars.globals)
     add_closure_vars_to_symtable(symtable, closure_vars.nonlocals)
 
-    transformer = AstTransformer(file, start_line, start_col, symtable)
+    base_location = concepts.Location(file, start_line, start_col)
+    transformer = AstTransformer(base_location, symtable)
     transformer.instantiate(definition, param_types, True, dims)
 
     callables = [*transformer.instantiations.values()]

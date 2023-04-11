@@ -13,28 +13,26 @@ from .verification import ensure_expr, ensure_type, ensure_dimension, ensure_fun
 
 
 class AstTransformer(ast.NodeTransformer):
-    file: str
-    start_line: int
-    start_col: int
+    base_location: concepts.Location
     symtable: SymbolTable
     instantiations: dict[str, hlast.Function | hlast.Stencil]
 
     def __init__(
             self,
-            file: str,
-            start_line: int,
-            start_col: int,
+            base_location: concepts.Location,
             symtable: SymbolTable,
     ):
         super().__init__()
-        self.file = file
-        self.start_line = start_line
-        self.start_col = start_col
+        self.base_location = base_location
         self.symtable = symtable
         self.instantiations = {}
 
     def get_ast_loc(self, node: ast.AST):
-        return hlast.Location(self.file, self.start_line + node.lineno, self.start_col + node.col_offset)
+        return hlast.Location(
+            self.base_location.file,
+            self.base_location.line + node.lineno,
+            self.base_location.column + node.col_offset
+        )
 
     def generic_visit(self, node: ast.AST, check=True) -> hlast.Node:
         if not check:
@@ -147,7 +145,7 @@ class AstTransformer(ast.NodeTransformer):
         args = [ensure_expr(self.visit(arg)) for arg in node.args]
 
         arg_types = [arg.type_ for arg in args]
-        mangled_name = self._get_mangled_name(callable_.definition, arg_types, None)
+        mangled_name = utility.mangle_name(utility.get_qualified_name(callable_.definition), arg_types, None)
         spec = self._get_enclosing_function(mangled_name)
         if spec:
             callee = spec.mangled_name
@@ -530,13 +528,14 @@ class AstTransformer(ast.NodeTransformer):
             is_public: bool,
             dims: Optional[list[concepts.Dimension]] = None
     ) -> hlast.Function | hlast.Stencil:
-        mangled_name = self._get_mangled_name(definition, arg_types, dims)
+        mangled_name = utility.mangle_name(utility.get_qualified_name(definition), arg_types, dims)
         func = self._get_instantiated_function(mangled_name)
         if func:
             return func
 
         def sc():
             source_code, file, start_line, start_col = get_source_code(definition)
+            self.base_location = concepts.Location(file, start_line, start_col)
             python_ast = ast.parse(source_code)
 
             assert isinstance(python_ast, ast.Module)
@@ -551,15 +550,13 @@ class AstTransformer(ast.NodeTransformer):
             instantiation = self.visit_FunctionDef(python_ast.body[0], spec=spec)
             return instantiation
 
+        enclosing_symtable = self.symtable
+        self.symtable = SymbolTable()
         instantiation = self.symtable.scope(sc)
-        self.instantiations[instantiation.name] = self.symtable.scope(sc)
+        self.instantiations[instantiation.name] = instantiation
+        self.symtable = enclosing_symtable
         return instantiation
-
-    def _get_mangled_name(self, definition: Callable, arg_types: list[ts.Type], dims: list[concepts.Dimension]):
-        name = definition.__name__
-        module = definition.__module__
-        return utility.mangle_name(f"{module}.{name}", arg_types, dims)
-
+    
     def _get_enclosing_function(self, mangled_name: Optional[str] = None) -> Optional[FunctionSpecification]:
         for info in self.symtable.infos():
             if isinstance(info, FunctionSpecification):

@@ -13,7 +13,7 @@ from .utility import (
     as_sir_arithmetic,
     as_sir_comparison,
     map_elementwise_shape,
-    shape_func_name
+    shape_func_name, is_slice_adjustment_trivial
 )
 from typing import Sequence
 
@@ -252,17 +252,20 @@ class ShapeTransformer(SirOpTransformer):
         def as_index(expr: ops.Value) -> ops.Value:
             return self.insert_op(ops.CastOp(expr, sir.IndexType(), loc)).get_result()
 
-        slices = [self._visit_slice(slc) for slc in sorted(node.slices, key=lambda slc: slc.dimension)]
+        sorted_slices = sorted(node.slices, key=lambda slc: slc.dimension)
+        slices = [self._visit_slice(slc) for slc in sorted_slices]
+        trivials = [is_slice_adjustment_trivial(slc.lower, slc.step) for slc in sorted_slices]
         starts = [as_index(slc[0]) for slc in slices]
         stops = [as_index(slc[1]) for slc in slices]
         steps = [as_index(slc[2]) for slc in slices]
         lengths: list[ops.Value] = self.visit(node.source)
 
         sizes: list[ops.Value] = []
-        for start, stop, step, length in zip(starts, stops, steps, lengths):
+        for start, stop, step, length, trivial in zip(starts, stops, steps, lengths, trivials):
+            adjust_func = "__adjust_slice_trivial" if trivial else "__adjust_slice"
             index_t = sir.IndexType()
             adj = self.insert_op(
-                ops.CallOp("__adjust_slice", [index_t, index_t], [start, stop, step, length], loc)
+                ops.CallOp(adjust_func, [index_t, index_t], [start, stop, step, length], loc)
             ).get_results()
             size = self.insert_op(ops.CallOp("__slice_size", [index_t], [adj[0], adj[1], step], loc)).get_results()[0]
             sizes.append(size)

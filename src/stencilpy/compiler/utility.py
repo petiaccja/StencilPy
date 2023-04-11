@@ -21,6 +21,16 @@ def format_type_short(type_: ts.Type):
     raise NotImplementedError()
 
 
+def get_qualified_name(obj: object):
+    module = getattr(obj, "__module__", None)
+    name = getattr(obj, "__qualname__", None)
+    assert name is not None
+    qual_name = f"{module}.{name}" if module else name
+    qual_name = qual_name.replace("<", "_")
+    qual_name = qual_name.replace(">", "_")
+    return qual_name
+
+
 def mangle_name(name: str, param_types: list[ts.Type], dims: Optional[list[concepts.Dimension]] = None):
     flat_types = type_traits.flatten(ts.TupleType(param_types))
     terms = name.split(".")
