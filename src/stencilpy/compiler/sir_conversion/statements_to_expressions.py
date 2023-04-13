@@ -99,7 +99,8 @@ class StatementsToExpressionsPass(PassthroughTransformer):
         syms_for_cont = self._collect_unknown_symbols(continuation)
         syms_for_self = self._collect_unknown_symbols(node.body)
         unique_syms = {sym.name: sym for sym in [*syms_for_self, *syms_for_cont]}
-        del unique_syms[node.loop_index.name]
+        if node.loop_index.name in unique_syms:
+            del unique_syms[node.loop_index.name]
         syms_all = list(unique_syms.values())
         sym_types = [sym.type_ for sym in syms_all]
 

@@ -215,7 +215,7 @@ class ShapeTransformer(SirOpTransformer):
         stop = self.visit(node.stop)
         step = self.visit(node.step)
         init = self.visit(node.init) if node.init else []
-        init_types = type_traits.flatten(node.type_)
+        init_types = type_traits.flatten(self._get_shape_type(node.type_))
         init_cast = [self.insert_op(ops.CastOp(v, as_sir_type(t), loc)).get_result() for v, t in zip(init, init_types)]
         forop: ops.ForOp = self.insert_op(ops.ForOp(*start, *stop, *step, init_cast, loc))
 

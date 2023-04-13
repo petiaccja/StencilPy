@@ -21,34 +21,38 @@ def laplacian(u: Field) -> Field:
 
 
 @stencil
-def apply_bcs_sn(central: Field, x_size: int, y_size: int) -> Field:
+def _sn_add_boundaries(central: Field, x_size: int, y_size: int) -> Field:
     idx = index()
+    elem_t = element_type(typeof(central))
     if 0 < idx[XDim] <= x_size and 0 < idx[YDim] <= y_size:
         offset = idx[XDim[-1], YDim[-1]]
         return central[offset]
-    elem_t = element_type(typeof(central))
+    if idx[XDim] == 0:
+        return cast(1.0, elem_t)
     return cast(0.0, elem_t)
 
+
 @func
-def apply_bcs(central: Field) -> Field:
+def add_boundaries(central: Field) -> Field:
     x_size = shape(central, XDim)
     y_size = shape(central, YDim)
-    return apply_bcs_sn[XDim[x_size + 2], YDim[y_size + 2]](central, x_size, y_size)
+    return _sn_add_boundaries[XDim[x_size + 2], YDim[y_size + 2]](central, x_size, y_size)
 
 
 @func
-def advance(u: Field) -> Field:
+def timestep(u: Field, step: float) -> Field:
     dudt = laplacian(u)
     central = u[XDim[1:-1], YDim[1:-1]]
-    updated = central - 0.05 * dudt
-    return apply_bcs(updated)
+    updated = central - step * dudt
+    return add_boundaries(updated)
 
 
 def test_heat_eq():
     data = np.random.random(size=(20, 20))
-    u = Field([XDim, YDim], data)
-    for i in range(0, 10):
-        u = advance(u, jit=True)
+    initial = Field([XDim, YDim], data)
+    step = 0.05
+    num_steps = 10
+    u = initial
+    for i in range(0, num_steps):
+        u = timestep(u, step, jit=False)
     assert u.data.shape == data.shape
-
-

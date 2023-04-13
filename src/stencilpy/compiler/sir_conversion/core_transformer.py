@@ -264,8 +264,20 @@ class CoreTransformer(SirOpTransformer):
         stop = self.visit(node.stop)
         step = self.visit(node.step)
         init = self.visit(node.init) if node.init else []
-        init_types = type_traits.flatten(node.type_)
-        init_cast = [self.insert_op(ops.CastOp(v, as_sir_type(t), loc)).get_result() for v, t in zip(init, init_types)]
+        init_types = type_traits.flatten(node.init.type_)
+        result_types = type_traits.flatten(node.type_)
+        init_cast: list[ops.Value] = []
+        for init_value, init_type, result_type in zip(init, init_types, result_types):
+            if isinstance(result_type, ts.FieldLikeType):
+                if init_type != result_type:
+                    raise CompilationError(
+                        node.location,
+                        f"loop-carried variable was defined as `{init_type}` before the loop, but has been assigned a "
+                        f"`{result_type}` in the loop body"
+                    )
+                init_cast.append(init_value)
+            else:
+                init_cast.append(self.insert_op(ops.CastOp(init_value, as_sir_type(result_type), loc)).get_result())
         forop: ops.ForOp = self.insert_op(ops.ForOp(*start, *stop, *step, init_cast, loc))
 
         def sc():

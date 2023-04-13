@@ -381,3 +381,29 @@ def test_for_nested_if(use_jit):
     assert fn(0, True, True, jit=use_jit) == 9
     assert fn(0, True, False, jit=use_jit) == 45
     assert fn(0, False, True, jit=use_jit) == -45
+
+
+def test_yield_for_field(use_jit):
+    @func
+    def fn(init: Field, stop: int) -> Field:
+        for i in range(stop):
+            init = 1*init
+        return init
+
+    a = Field([TDim], np.array([1, 2, 3]))
+    r = fn(a, 10, jit=use_jit)
+    assert np.all(r.data == a.data)
+
+
+def test_yield_if_field(use_jit):
+    @func
+    def fn(c: bool, a: Field, b: Field) -> Field:
+        if c:
+            return 1 * a
+        else:
+            return 1 * b
+
+    a = Field([TDim], np.array([1, 2, 3]))
+    b = Field([TDim], np.array([1, 2, 3]))
+    assert np.all(fn(True, a, b, jit=use_jit).data == a.data)
+    assert np.all(fn(False, a, b, jit=use_jit).data == b.data)
