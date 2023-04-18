@@ -1,10 +1,9 @@
 from stencilpy import concepts
 from stencilpy.compiler import hlast
-from stencilpy.compiler import types as ts
+from stencilpy.compiler import types as ts, type_traits
 from stencilir import ops
-from stencilpy.utility import flatten
 import stencilir as sir
-from typing import Sequence, Iterable, Any, Optional
+from typing import Sequence, Optional
 
 
 def as_sir_loc(loc: hlast.Location) -> ops.Location:
@@ -18,12 +17,15 @@ def as_sir_type(type_: ts.Type) -> sir.Type:
         return sir.IntegerType(type_.width, type_.signed)
     elif isinstance(type_, ts.FloatType):
         return sir.FloatType(type_.width)
+    elif isinstance(type_, ts.NDIndexType):
+        return sir.NDIndexType(len(type_.dims))
     elif isinstance(type_, ts.FieldLikeType):
         return sir.FieldType(as_sir_type(type_.element_type), len(type_.dimensions))
     elif isinstance(type_, ts.FunctionType):
         return sir.FunctionType(
             [as_sir_type(p) for p in type_.parameters],
-            [as_sir_type(r) for r in type_.results],
+            [as_sir_type(r) for r in type_traits.flatten(type_.result)]
+            if not isinstance(type_.result, ts.VoidType) else [],
         )
     else:
         raise ValueError(f"no SIR type equivalent for {type_.__class__}")

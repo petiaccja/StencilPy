@@ -131,7 +131,7 @@ def _get_signature(hast_module: hlast.Module, func_name: str) -> ts.FunctionType
 @dataclasses.dataclass
 class JitFunction:
     definition: Callable
-    runtime_cache: dict[str, tuple[ts.FunctionType, sir.CompiledModule]]\
+    runtime_cache: dict[tuple[str, sir.CompileOptions], tuple[ts.FunctionType, sir.CompiledModule]]\
         = dataclasses.field(init=False, repr=False, default_factory=lambda: {})
 
     def __call__(self, *args, **kwargs):
@@ -142,13 +142,12 @@ class JitFunction:
         return self.definition(*args, **kwargs) if not use_jit else self.call_jit(*args, **kwargs)
 
     def call_jit(self, *args, **kwargs):
+        optimizations = sir.OptimizationOptions(True, True, True, True)
+        compile_options = sir.CompileOptions(sir.TargetArch.X86, sir.OptimizationLevel.O3, optimizations)
+
         arg_types = [type_traits.from_object(arg) for arg in args]
+        function_type, compiled_module = self.get_compiled_module(arg_types, compile_options)
         mangled_name = cutil.mangle_name(cutil.get_qualified_name(self.definition), arg_types)
-        if mangled_name in self.runtime_cache:
-            function_type, compiled_module = self.runtime_cache[mangled_name]
-        else:
-            function_type, compiled_module = self.compile_jit_module(*args, **kwargs)
-            self.runtime_cache[mangled_name] = (function_type, compiled_module)
 
         translated_args = _translate_regular_args(args)
         out_shapes = _get_result_shapes(mangled_name, type_traits.flatten(function_type.result), compiled_module, args)
@@ -160,15 +159,30 @@ class JitFunction:
             return matched
         return type_traits.unflatten(matched, function_type.result)
 
-    def compile_jit_module(self, *args, **kwargs):
-        arg_types = [type_traits.from_object(arg) for arg in args]
+    def get_compiled_module(self, arg_types: Sequence[ts.Type], options: sir.CompileOptions):
         mangled_name = cutil.mangle_name(cutil.get_qualified_name(self.definition), arg_types)
-        kwarg_types = {name: type_traits.from_object(value) for name, value in kwargs.items()}
-        hast_module = self.parse(arg_types, kwarg_types)
+        key = (
+            mangled_name,
+            (
+                options.target_arch,
+                options.opt_level,
+                options.opt_options.inline_functions,
+                options.opt_options.fuse_extract_slice_ops,
+                options.opt_options.fuse_apply_ops,
+                options.opt_options.eliminate_alloc_buffers,
+            )
+        )
+        if key not in self.runtime_cache:
+            function_type, compiled_module = JitFunction.compile(self.definition, arg_types, options)
+            self.runtime_cache[key] = (function_type, compiled_module)
+        return self.runtime_cache[key]
+
+    @staticmethod
+    def compile(definition: Callable, arg_types: Sequence[ts.Type], options: sir.CompileOptions):
+        mangled_name = cutil.mangle_name(cutil.get_qualified_name(definition), arg_types)
+        hast_module = parser.function_to_hlast(definition, arg_types, {})
         function_type = _get_signature(hast_module, mangled_name)
         sir_module = sir_conversion.hlast_to_sir(hast_module)
-        opt = sir.OptimizationOptions(True, True, True, True)
-        options = sir.CompileOptions(sir.TargetArch.X86, sir.OptimizationLevel.O3, opt)
         compiled_module = sir.CompiledModule(sir_module, options)
         try:
             compiled_module.compile(True)
@@ -177,9 +191,6 @@ class JitFunction:
             raise
         ir = compiled_module.get_stage_results()
         return function_type, compiled_module
-
-    def parse(self, arg_types: list[sir.Type], kwarg_types: dict[str, sir.Type]) -> hlast.Module:
-        return parser.function_to_hlast(self.definition, arg_types, kwarg_types)
 
 
 @dataclasses.dataclass

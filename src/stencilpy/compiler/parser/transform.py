@@ -1,6 +1,6 @@
 import inspect
 import ast
-from typing import Optional, Callable
+from typing import Optional, Callable, Sequence
 
 from stencilpy.compiler import types as ts
 from stencilpy import concepts
@@ -12,9 +12,9 @@ from .utility import get_source_code, add_closure_vars_to_symtable
 
 def function_to_hlast(
         definition: Callable,
-        param_types: list[ts.Type],
+        param_types: Sequence[ts.Type],
         kwparam_types: dict[str, ts.Type],
-        dims: Optional[list[concepts.Dimension]] = None
+        dims: Optional[Sequence[concepts.Dimension]] = None
 ) -> hlast.Module:
     source_code, file, start_line, start_col = get_source_code(definition)
     python_ast = ast.parse(source_code)

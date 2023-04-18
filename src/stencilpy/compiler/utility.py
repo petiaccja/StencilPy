@@ -1,5 +1,5 @@
 from stencilpy.compiler import types as ts, type_traits
-from typing import Optional
+from typing import Optional, Sequence
 from stencilpy import concepts
 
 
@@ -31,7 +31,7 @@ def get_qualified_name(obj: object):
     return qual_name
 
 
-def mangle_name(name: str, param_types: list[ts.Type], dims: Optional[list[concepts.Dimension]] = None):
+def mangle_name(name: str, param_types: Sequence[ts.Type], dims: Optional[list[concepts.Dimension]] = None):
     flat_types = type_traits.flatten(ts.TupleType(param_types))
     terms = name.split(".")
     base_name = "".join([f"{len(term)}{term}" for term in terms])

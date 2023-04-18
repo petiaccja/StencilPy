@@ -27,7 +27,7 @@ def _sn_add_boundaries(central: Field, x_size: int, y_size: int) -> Field:
     if 0 < idx[XDim] <= x_size and 0 < idx[YDim] <= y_size:
         offset = idx[XDim[-1], YDim[-1]]
         return central[offset]
-    if idx[XDim] == 0:
+    elif idx[XDim] == 0:
         return cast(1.0, elem_t)
     return cast(0.0, elem_t)
 
@@ -54,5 +54,5 @@ def test_heat_eq():
     num_steps = 10
     u = initial
     for i in range(0, num_steps):
-        u = timestep(u, step, jit=False)
+        u = timestep(u, step, jit=True)
     assert u.data.shape == data.shape

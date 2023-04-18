@@ -280,7 +280,8 @@ class AstTransformer(ast.NodeTransformer):
         def builder(args: list[hlast.Expr]) -> hlast.Expr:
             arg_types = [arg.type_ for arg in args]
             type_ = type_traits.common_type(*arg_types)
-            assert type_
+            if not type_:
+                raise ArgumentCompatibilityError(loc, f"arith:{str(func)}", arg_types)
             lhs = hlast.Cast(loc, type_, args[0], type_)
             rhs = hlast.Cast(loc, type_, args[1], type_)
             return hlast.ArithmeticOperation(loc, type_, lhs, rhs, func)
@@ -524,9 +525,9 @@ class AstTransformer(ast.NodeTransformer):
     def instantiate(
             self,
             definition: Callable,
-            arg_types: list[ts.Type],
+            arg_types: Sequence[ts.Type],
             is_public: bool,
-            dims: Optional[list[concepts.Dimension]] = None
+            dims: Optional[Sequence[concepts.Dimension]] = None
     ) -> hlast.Function | hlast.Stencil:
         mangled_name = utility.mangle_name(utility.get_qualified_name(definition), arg_types, dims)
         func = self._get_instantiated_function(mangled_name)
@@ -546,7 +547,7 @@ class AstTransformer(ast.NodeTransformer):
             add_closure_vars_to_symtable(self.symtable, closure_vars.globals)
             add_closure_vars_to_symtable(self.symtable, closure_vars.nonlocals)
 
-            spec = FunctionSpecification(mangled_name, arg_types, {}, is_public, dims)
+            spec = FunctionSpecification(mangled_name, list(arg_types), {}, is_public, dims)
             instantiation = self.visit_FunctionDef(python_ast.body[0], spec=spec)
             return instantiation
 
