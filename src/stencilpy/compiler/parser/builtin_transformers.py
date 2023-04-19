@@ -43,6 +43,18 @@ def builtin_exchange(transformer: NodeTransformer, location: concepts.Location, 
     return hlast.Exchange(location, type_, index, value, old_dim, new_dim)
 
 
+def builtin_extend(transformer: NodeTransformer, location: concepts.Location, args: Sequence[ast.AST]):
+    assert len(args) == 3
+    index = transformer.visit(args[0])
+    value = transformer.visit(args[1])
+    dim = transformer.visit(args[2])
+    type_ = index.type_
+    if isinstance(index.type_, ts.NDIndexType):
+        new_dims = list(set(index.type_.dims) | {dim})
+        type_ = ts.NDIndexType(sorted(new_dims))
+    return hlast.Extend(location, type_, index, value, dim)
+
+
 def builtin_cast(transformer: NodeTransformer, location: concepts.Location, args: Sequence[ast.AST]):
     assert len(args) == 2
     value = transformer.visit(args[0])
@@ -69,6 +81,7 @@ BUILTIN_MAPPING = {
     "shape": builtin_shape,
     "index": builtin_index,
     "exchange": builtin_exchange,
+    "extend": builtin_extend,
     "cast": builtin_cast,
     "select": builtin_select,
 }

@@ -362,6 +362,17 @@ class CoreTransformer(SirOpTransformer):
         positions = [sorted_new_dims.index(dim) for dim in new_dims]
         return self.insert_op(ops.ProjectOp(exch, positions, loc)).get_results()
 
+    def visit_Extend(self, node: hlast.Extend) -> list[ops.Value]:
+        assert isinstance(node.index.type_, ts.NDIndexType)
+        loc = as_sir_loc(node.location)
+        index = self.visit(node.index)
+        value = self.insert_op(ops.CastOp(*self.visit(node.value), sir.IndexType(), loc)).get_result()
+
+        assert isinstance(node.type_, ts.NDIndexType)
+        position = node.type_.dims.index(node.dim)
+
+        return self.insert_op(ops.ExtendOp(*index, position, value, loc)).get_results()
+
     def visit_Extract(self, node: hlast.Extract) -> list[ops.Value]:
         assert isinstance(node.index.type_, ts.NDIndexType)
         loc = as_sir_loc(node.location)

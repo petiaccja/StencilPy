@@ -122,3 +122,20 @@ def test_sparsity(use_jit):
     r = fn(conn, jit=use_jit)
     assert r.sorted_dimensions == expected.sorted_dimensions
     assert np.all(r.data == expected.data)
+
+
+def test_reduce(use_jit):
+    @func
+    def fn(field: Field):
+        return reduce(field, TDim)
+
+    a = Field([TDim, UDim], np.array([
+        [1, 2, 3, 4, 5],
+        [6, 7, 8, 9, 10],
+    ]))
+
+    r = fn(a, jit=use_jit)
+    expected = np.sum(a.data, axis=0)
+    assert isinstance(r, Field)
+    assert r.sorted_dimensions == [UDim]
+    assert np.allclose(r.data, expected)

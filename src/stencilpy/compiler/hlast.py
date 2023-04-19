@@ -287,6 +287,13 @@ class Exchange(Expr):
 
 
 @dataclasses.dataclass
+class Extend(Expr):
+    index: Expr
+    value: Expr
+    dim: Dimension
+
+
+@dataclasses.dataclass
 class Extract(Expr):
     index: Expr
     dim: Dimension

@@ -166,7 +166,7 @@ class AstTransformer(ast.NodeTransformer):
         except:
             return None
         args = [self.visit(arg) for arg in node.args]
-        return func(*args, is_jit=True)
+        return func(*args, transformer=self)
 
     #-----------------------------------
     # Control flow

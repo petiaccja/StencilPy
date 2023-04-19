@@ -43,36 +43,46 @@ def exchange(
     return exchanged
 
 
-@concepts.metafunc
-def remap_old_dim(is_jit: bool, conn_type: ts.ConnectivityType):
-    return conn_type.origin_dimension
+@concepts.builtin
+def extend(
+        index: concepts.Index,
+        value: Any,
+        dim: concepts.Dimension,
+) -> concepts.Index:
+    exchanged = copy.deepcopy(index)
+    exchanged.values[dim] = value
+    return exchanged
 
-
-@concepts.metafunc
-def remap_new_dim(is_jit: bool, conn_type: ts.ConnectivityType):
-    return conn_type.neighbor_dimension
-
+#---------------------------------------
+# Remap
+#---------------------------------------
 
 @stencilpy.func.stencil
-def remap_stencil(source: storage.Field, conn: storage.Connectivity):
+def _sn_remap(source: storage.Field, conn: storage.Connectivity):
     idx = index()
     conn_value = conn[idx]
     invalid_value = cast(-1, stencilpy.meta.typeof(conn_value))
     fallback_value = cast(0, stencilpy.meta.typeof(conn_value))
     clamped_value = select(conn_value == invalid_value, fallback_value, conn_value)
-    source_idx = exchange(idx, clamped_value, remap_old_dim(stencilpy.meta.typeof(conn)), remap_new_dim(stencilpy.meta.typeof(conn)))
+    conn_type = stencilpy.meta.typeof(conn)
+    source_idx = exchange(
+        idx,
+        clamped_value,
+        stencilpy.meta.origin_dim(conn_type),
+        stencilpy.meta.neighbor_dim(conn_type)
+    )
     return source[source_idx]
 
 
 @concepts.metafunc
-def remap_domain(is_jit: bool, source: storage.Field | hlast.Expr, conn: storage.Connectivity | hlast.Expr):
+def _remap_domain(source: storage.Field | hlast.Expr, conn: storage.Connectivity | hlast.Expr, transformer=None):
     loc = concepts.Location("<remap_domain>", 1, 0)
-    src_type = stencilpy.meta.typeof(source, is_jit=is_jit)
-    conn_type = stencilpy.meta.typeof(conn, is_jit=is_jit)
+    src_type = stencilpy.meta.typeof(source, transformer=transformer)
+    conn_type = stencilpy.meta.typeof(conn, transformer=transformer)
     assert isinstance(src_type, ts.FieldType)
     assert isinstance(conn_type, ts.ConnectivityType)
     src_dims = list(set(src_type.dimensions) - {conn_type.neighbor_dimension})
-    if is_jit:
+    if transformer:
         return (
             *[hlast.Size(loc, ts.index_t, dim, hlast.Shape(loc, ts.index_t, source, dim)) for dim in src_dims],
             *[hlast.Size(loc, ts.index_t, dim, hlast.Shape(loc, ts.index_t, conn, dim)) for dim in conn_type.dimensions],
@@ -86,22 +96,26 @@ def remap_domain(is_jit: bool, source: storage.Field | hlast.Expr, conn: storage
 
 @stencilpy.func.func
 def remap(source: storage.Field, conn: storage.Connectivity):
-    return remap_stencil[remap_domain(source, conn)](source, conn)
+    return _sn_remap[_remap_domain(source, conn)](source, conn)
 
+
+#---------------------------------------
+# Sparsity
+#---------------------------------------
 
 @stencilpy.func.stencil
-def sparsity_stencil(conn: storage.Connectivity):
+def _sn_sparsity(conn: storage.Connectivity):
     invalid_value = cast(-1, stencilpy.meta.element_type(stencilpy.meta.typeof(conn)))
     value = conn[index()]
     return value != invalid_value
 
 
 @concepts.metafunc
-def sparsity_domain(is_jit: bool, conn: storage.Connectivity | hlast.Expr):
+def _sparsity_domain(conn: storage.Connectivity | hlast.Expr, transformer=None):
     loc = concepts.Location("<sparsity_domain>", 1, 0)
-    conn_type = stencilpy.meta.typeof(conn, is_jit=is_jit)
+    conn_type = stencilpy.meta.typeof(conn, transformer=transformer)
     assert isinstance(conn_type, ts.ConnectivityType)
-    if is_jit:
+    if transformer:
         return (
             *[hlast.Size(loc, ts.index_t, dim, hlast.Shape(loc, ts.index_t, conn, dim)) for dim in conn_type.dimensions],
         )
@@ -112,4 +126,71 @@ def sparsity_domain(is_jit: bool, conn: storage.Connectivity | hlast.Expr):
 
 @stencilpy.func.func
 def sparsity(conn: storage.Connectivity):
-    return sparsity_stencil[sparsity_domain(conn)](conn)
+    return _sn_sparsity[_sparsity_domain(conn)](conn)
+
+
+#---------------------------------------
+# Reduction
+#---------------------------------------
+
+_reduce_ctx_dim_var: Optional[concepts.Dimension] = None
+
+@stencilpy.concepts.metafunc
+def _reduce_ctx_dim(**_):
+    return _reduce_ctx_dim_var
+
+
+@stencilpy.concepts.metafunc
+def _reduce_domain(field: storage.Field | hlast.Expr, transformer=None):
+    loc = concepts.Location("<reduce_domain>", 1, 0)
+    dim = _reduce_ctx_dim()
+    if not transformer:
+        assert isinstance(field, storage.Field)
+        shape = field.shape
+        del shape[dim]
+        return tuple(concepts.Slice(dim, size) for dim, size in shape.items())
+    else:
+        assert isinstance(field, hlast.Expr)
+        assert isinstance(field.type_, ts.FieldType)
+        return (
+            *[
+                hlast.Size(loc, ts.index_t, d, hlast.Shape(loc, ts.index_t, field, d))
+                for d in field.type_.dimensions if d != dim
+            ],
+        )
+
+@stencilpy.func.stencil
+def _sn_reduce(field: storage.Field):
+    elem_t = stencilpy.meta.element_type(stencilpy.meta.typeof(field))
+    dim = _reduce_ctx_dim()
+    init = cast(0.0, elem_t)
+    size = shape(field, dim)
+    for i in range(size):
+        idx = extend(index(), i, dim)
+        value = field[idx]
+        init = init + value
+    return init
+
+
+@stencilpy.func.func
+def _fn_reduce(field: storage.Field):
+    return _sn_reduce[_reduce_domain(field)](field)
+
+
+@concepts.metafunc
+def reduce(field: storage.Field | hlast.Expr, dim: concepts.Dimension, transformer=None):
+    loc = concepts.Location("<reduce>", 1, 0)
+    global _reduce_ctx_dim_var
+    _reduce_ctx_dim_var = dim
+    if not transformer:
+        assert isinstance(field, storage.Field)
+        return _fn_reduce(field)
+    else:
+        from stencilpy.compiler.parser.ast_transformer import AstTransformer
+        assert isinstance(transformer, AstTransformer)
+        assert isinstance(field, hlast.Expr)
+        assert isinstance(field.type_, ts.FieldType)
+        func: hlast.Function = transformer.instantiate(_fn_reduce.definition, [field.type_], False, None)
+        type_ = ts.FieldType(field.type_.element_type, [d for d in field.type_.dimensions if d != dim])
+        return hlast.Call(loc, type_, func.name, [field])
+

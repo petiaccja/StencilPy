@@ -5,14 +5,25 @@ from stencilpy.compiler import hlast
 
 
 @concepts.metafunc
-def typeof(is_jit, value: Any):
-    if is_jit:
+def typeof(value: Any, transformer=None):
+    if transformer:
         assert isinstance(value, hlast.Expr)
         return value.type_
     else:
         return type_traits.from_object(value)
 
+
 @concepts.metafunc
-def element_type(is_jit, value: ts.FieldLikeType):
+def element_type(value: ts.FieldLikeType, **_):
     assert isinstance(value, ts.FieldLikeType)
     return value.element_type
+
+
+@concepts.metafunc
+def origin_dim(conn_type: ts.ConnectivityType, **_):
+    return conn_type.origin_dimension
+
+
+@concepts.metafunc
+def neighbor_dim(conn_type: ts.ConnectivityType, **_):
+    return conn_type.neighbor_dimension

@@ -100,10 +100,10 @@ class Stencil(typing.Protocol):
 
 @dataclasses.dataclass
 class MetaFunc:
-    definition: Callable[[bool, Any, ...], Any]
+    definition: Callable
 
-    def __call__(self, *args, is_jit=False, **kwargs):
-        return self.definition(is_jit, *args, **kwargs)
+    def __call__(self, *args, transformer=None, **kwargs):
+        return self.definition(*args, transformer=transformer, **kwargs)
 
 
 def builtin(definition: Callable):
