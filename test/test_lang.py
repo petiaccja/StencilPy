@@ -3,8 +3,8 @@ import pytest
 
 from stencilpy.storage import Field, Connectivity
 from stencilpy.concepts import Dimension
-from stencilpy.func import func, stencil
-from stencilpy.lib import index
+from stencilpy.run import func, stencil
+from stencilpy.stdlib import index
 from .config import use_jit
 
 TDim = Dimension()

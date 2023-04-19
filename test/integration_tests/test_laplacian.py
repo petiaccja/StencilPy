@@ -1,8 +1,8 @@
 import numpy as np
 from stencilpy.storage import Field
 from stencilpy.concepts import Dimension
-from stencilpy.func import func, stencil
-from stencilpy.lib import index
+from stencilpy.run import func, stencil
+from stencilpy.stdlib import index
 from ..config import use_jit
 
 XDim = Dimension()

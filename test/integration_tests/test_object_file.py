@@ -1,4 +1,4 @@
-from stencilpy.func import func
+from stencilpy.run import func
 import pathlib, tempfile
 from stencilpy.compiler import types as ts
 import stencilir as sir

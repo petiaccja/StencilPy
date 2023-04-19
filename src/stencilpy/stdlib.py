@@ -4,13 +4,13 @@ from stencilpy import concepts
 from typing import Optional, Any
 from stencilpy import storage
 from stencilpy.compiler import types as ts, hlast, type_traits
-import stencilpy.func
-import stencilpy.meta
+import stencilpy.run
+import stencilpy.metalib
 
 
 @concepts.builtin
 def index():
-    return stencilpy.func._index
+    return stencilpy.run._index
 
 
 @concepts.builtin
@@ -57,19 +57,19 @@ def extend(
 # Remap
 #---------------------------------------
 
-@stencilpy.func.stencil
+@stencilpy.run.stencil
 def _sn_remap(source: storage.Field, conn: storage.Connectivity):
     idx = index()
     conn_value = conn[idx]
-    invalid_value = cast(-1, stencilpy.meta.typeof(conn_value))
-    fallback_value = cast(0, stencilpy.meta.typeof(conn_value))
+    invalid_value = cast(-1, stencilpy.metalib.typeof(conn_value))
+    fallback_value = cast(0, stencilpy.metalib.typeof(conn_value))
     clamped_value = select(conn_value == invalid_value, fallback_value, conn_value)
-    conn_type = stencilpy.meta.typeof(conn)
+    conn_type = stencilpy.metalib.typeof(conn)
     source_idx = exchange(
         idx,
         clamped_value,
-        stencilpy.meta.origin_dim(conn_type),
-        stencilpy.meta.neighbor_dim(conn_type)
+        stencilpy.metalib.origin_dim(conn_type),
+        stencilpy.metalib.neighbor_dim(conn_type)
     )
     return source[source_idx]
 
@@ -77,8 +77,8 @@ def _sn_remap(source: storage.Field, conn: storage.Connectivity):
 @concepts.metafunc
 def _remap_domain(source: storage.Field | hlast.Expr, conn: storage.Connectivity | hlast.Expr, transformer=None):
     loc = concepts.Location("<remap_domain>", 1, 0)
-    src_type = stencilpy.meta.typeof(source, transformer=transformer)
-    conn_type = stencilpy.meta.typeof(conn, transformer=transformer)
+    src_type = stencilpy.metalib.typeof(source, transformer=transformer)
+    conn_type = stencilpy.metalib.typeof(conn, transformer=transformer)
     assert isinstance(src_type, ts.FieldType)
     assert isinstance(conn_type, ts.ConnectivityType)
     src_dims = list(set(src_type.dimensions) - {conn_type.neighbor_dimension})
@@ -94,7 +94,7 @@ def _remap_domain(source: storage.Field | hlast.Expr, conn: storage.Connectivity
         )
 
 
-@stencilpy.func.func
+@stencilpy.run.func
 def remap(source: storage.Field, conn: storage.Connectivity):
     return _sn_remap[_remap_domain(source, conn)](source, conn)
 
@@ -103,9 +103,9 @@ def remap(source: storage.Field, conn: storage.Connectivity):
 # Sparsity
 #---------------------------------------
 
-@stencilpy.func.stencil
+@stencilpy.run.stencil
 def _sn_sparsity(conn: storage.Connectivity):
-    invalid_value = cast(-1, stencilpy.meta.element_type(stencilpy.meta.typeof(conn)))
+    invalid_value = cast(-1, stencilpy.metalib.element_type(stencilpy.metalib.typeof(conn)))
     value = conn[index()]
     return value != invalid_value
 
@@ -113,7 +113,7 @@ def _sn_sparsity(conn: storage.Connectivity):
 @concepts.metafunc
 def _sparsity_domain(conn: storage.Connectivity | hlast.Expr, transformer=None):
     loc = concepts.Location("<sparsity_domain>", 1, 0)
-    conn_type = stencilpy.meta.typeof(conn, transformer=transformer)
+    conn_type = stencilpy.metalib.typeof(conn, transformer=transformer)
     assert isinstance(conn_type, ts.ConnectivityType)
     if transformer:
         return (
@@ -124,7 +124,7 @@ def _sparsity_domain(conn: storage.Connectivity | hlast.Expr, transformer=None):
             *[concepts.Slice(dim, conn.shape[dim]) for dim in conn_type.dimensions],
         )
 
-@stencilpy.func.func
+@stencilpy.run.func
 def sparsity(conn: storage.Connectivity):
     return _sn_sparsity[_sparsity_domain(conn)](conn)
 
@@ -159,9 +159,9 @@ def _reduce_domain(field: storage.Field | hlast.Expr, transformer=None):
             ],
         )
 
-@stencilpy.func.stencil
+@stencilpy.run.stencil
 def _sn_reduce(field: storage.Field):
-    elem_t = stencilpy.meta.element_type(stencilpy.meta.typeof(field))
+    elem_t = stencilpy.metalib.element_type(stencilpy.metalib.typeof(field))
     dim = _reduce_ctx_dim()
     init = cast(0.0, elem_t)
     size = shape(field, dim)
@@ -172,7 +172,7 @@ def _sn_reduce(field: storage.Field):
     return init
 
 
-@stencilpy.func.func
+@stencilpy.run.func
 def _fn_reduce(field: storage.Field):
     return _sn_reduce[_reduce_domain(field)](field)
 

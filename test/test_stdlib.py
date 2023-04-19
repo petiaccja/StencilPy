@@ -1,8 +1,8 @@
-from stencilpy.lib import *
+from stencilpy.stdlib import *
 from .config import use_jit
 from stencilpy.concepts import *
 from stencilpy.storage import *
-from stencilpy.func import func, stencil
+from stencilpy.run import func, stencil
 
 TDim = concepts.Dimension()
 UDim = concepts.Dimension()
