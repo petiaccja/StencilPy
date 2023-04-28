@@ -60,7 +60,7 @@ class Parameter(Node):
     
     
 @dataclasses.dataclass
-class Slice:
+class Slice(Expr):
     dimension: Dimension
     lower: Optional[Expr]
     upper: Optional[Expr]

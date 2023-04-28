@@ -122,7 +122,15 @@ class AstTransformer(ast.NodeTransformer):
             callable_ = ensure_stencil(self.visit(node_shape.value), loc=loc)
         except:
             return None
-        sizes: Sequence[hlast.Size] = self._visit_getitem_expr(node_shape.slice)
+        domain = self.visit(node_shape.slice)
+
+        if isinstance(domain, hlast.TupleCreate):
+            sizes = domain.elements
+        else:
+            sizes = [domain]
+        if not all(isinstance(sz, hlast.Size) for sz in sizes):
+            return None
+        sizes = cast(list[hlast.Size], sizes)
         shape = {sz.dimension: sz.size for sz in sizes}
         dims = sorted(sz.dimension for sz in sizes)
         args = [ensure_expr(self.visit(arg)) for arg in node.args]
@@ -418,65 +426,129 @@ class AstTransformer(ast.NodeTransformer):
     # Misc
     #-----------------------------------
 
-    def visit_Subscript(self, node: ast.Subscript) -> Any:
+    def _visit_subscript_size(self, node: ast.Subscript) -> Optional[hlast.Expr]:
         loc = self.get_ast_loc(node)
         value = self.visit(node.value)
+        if not isinstance(value, concepts.Dimension):
+            return None
+        if isinstance(node.slice, ast.Slice):
+            return None
+        size = self.visit(node.slice)
+        return hlast.Size(loc, size.type_, value, size)
 
-        if isinstance(value, concepts.Dimension):
-            slice_expr = self.visit(node.slice)
-            if isinstance(slice_expr, hlast.Expr):
-                return hlast.Size(loc, slice_expr.type_, value, slice_expr)
-            elif isinstance(slice_expr, hlast.Slice):
-                return hlast.Slice(value, slice_expr.lower, slice_expr.upper, slice_expr.step)
-            raise CompilationError(loc, f"dimension cannot be subscripted by object of type `{slice_expr.type_}`")
-        elif isinstance(value.type_, ts.FieldLikeType):
-            slice_exprs: Sequence[hlast.Expr] = self._visit_getitem_expr(node.slice)
-            if all(isinstance(expr, (hlast.Slice, hlast.Size)) for expr in slice_exprs):
-                slices: list[hlast.Slice] = [
-                    self._promote_to_slice(expr) if isinstance(expr, hlast.Size) else expr
-                    for expr in slice_exprs
-                ]
-                return hlast.ExtractSlice(loc, value.type_, value, slices)
-            elif isinstance(slice_exprs[0].type_, ts.NDIndexType):
-                return hlast.Sample(loc, value.type_.element_type, value, slice_exprs[0])
-            expr_types = [str(expr.type_) if hasattr(expr, "type_") else str(type(expr)) for expr in slice_exprs]
-            str_types = ", ".join(expr_types)
-            raise CompilationError(loc, f"field cannot be subscripted by object of type `({str_types})`")
-        elif isinstance(value.type_, ts.TupleType):
-            element = self.visit(node.slice)
-            if not isinstance(element, hlast.Constant) and isinstance(element.type_, (ts.IndexType, ts.IntegerType)):
-                raise CompilationError(loc, "tuples can only be subscripted with a constant integral")
-            index = int(element.value)
-            if index >= len(value.type_.elements):
-                raise CompilationError(loc, "tuples subscript is out of bounds")
-            type_ = value.type_.elements[index]
-            return hlast.TupleExtract(loc, type_, value, index)
-        elif isinstance(value.type_, ts.NDIndexType):
-            element = self.visit(node.slice)
-            if isinstance(element, concepts.Dimension):
-                if element not in value.type_.dims:
-                    raise CompilationError(loc, f"dimension {element} not part of {value.type_}")
-                return hlast.Extract(loc, ts.index_t, value, element)
-            elif isinstance(element, hlast.TupleCreate):
-                offset: dict[concepts.Dimension, int] = {}
-                for off in element.elements:
-                    if not isinstance(off, hlast.Size):
-                        raise CompilationError(loc, "expected dimensioned sizes")
-                    if not isinstance(off.size, hlast.Constant):
-                        raise CompilationError(off.size.location, "expected an integer literal")
-                    offset[off.dimension] = off.size.value
-                return hlast.Jump(loc, value.type_, value, offset)
-        raise CompilationError(loc, f"object of type {value.type_} be subscripted")
-
-    def visit_Slice(self, node: ast.Slice) -> hlast.Slice:
-        global invalid_dim
-        if not "invalid_dim" in globals():
-            invalid_dim = concepts.Dimension("INVALID_DIM")
+    def _visit_subscript_slice(self, node: ast.Subscript) -> Optional[hlast.Expr]:
         loc = self.get_ast_loc(node)
-        lower = ensure_expr(self.visit(node.lower), loc=loc) if node.lower else None
-        upper = ensure_expr(self.visit(node.upper), loc=loc) if node.upper else None
-        step = ensure_expr(self.visit(node.step), loc=loc) if node.step else None
-        return hlast.Slice(invalid_dim, lower, upper, step)
+        value = self.visit(node.value)
+        if not isinstance(value, concepts.Dimension):
+            return None
+        if not isinstance(node.slice, ast.Slice):
+            return None
+        start = ensure_expr(self.visit(node.slice.lower), loc=loc) if node.slice.lower else None
+        stop = ensure_expr(self.visit(node.slice.upper), loc=loc) if node.slice.upper else None
+        step = ensure_expr(self.visit(node.slice.step), loc=loc) if node.slice.step else None
+        return hlast.Slice(loc, ts.index_t, value, start, stop, step)
+
+    def _visit_subscript_tuple_extract(self, node: ast.Subscript):
+        loc = self.get_ast_loc(node)
+        value = self.visit(node.value)
+        if not isinstance(value, hlast.Expr):
+            return None
+        if not isinstance(value.type_, ts.TupleType):
+            return None
+        index_node = self.visit(node.slice)
+        if not isinstance(index_node, hlast.Constant) or not isinstance(index_node.type_, (ts.IndexType, ts.IntegerType)):
+            raise CompilationError(loc, "tuples can only be subscripted with a constant integral")
+        index_value = index_node.value
+        if not 0 <= index_value < len(value.type_.elements):
+            raise CompilationError(loc, "index out of bounds")
+        return hlast.TupleExtract(loc, value.type_.elements[index_value], value, index_value)
+
+    def _visit_subscript_sample(self, node: ast.Subscript):
+        loc = self.get_ast_loc(node)
+        value = self.visit(node.value)
+        if not isinstance(value, hlast.Expr):
+            return None
+        if not isinstance(value.type_, ts.FieldLikeType):
+            return None
+        index = ensure_expr(self.visit(node.slice))
+        if not isinstance(index.type_, ts.NDIndexType):
+            return None
+        return hlast.Sample(loc, value.type_.element_type, value, index)
+
+    def _visit_subscript_extract_slice(self, node: ast.Subscript):
+        loc = self.get_ast_loc(node)
+        source = self.visit(node.value)
+        if not isinstance(source, hlast.Expr):
+            return None
+        if not isinstance(source.type_, ts.FieldLikeType):
+            return None
+        slices = ensure_expr(self.visit(node.slice))
+        if isinstance(slices, hlast.TupleCreate):
+            slice_list = slices.elements
+        else:
+            slice_list = [slices]
+        promoted_slice_list: list[hlast.Slice] = []
+        for slc in slice_list:
+            if isinstance(slc, hlast.Size):
+                slc = self._promote_to_slice(slc)
+            if not isinstance(slc, hlast.Slice):
+                return None
+            promoted_slice_list.append(slc)
+        return hlast.ExtractSlice(loc, source.type_, source, promoted_slice_list)
+
+    def _visit_subscript_extract_index(self, node: ast.Subscript):
+        loc = self.get_ast_loc(node)
+        index = self.visit(node.value)
+        if not isinstance(index, hlast.Expr):
+            return None
+        if not isinstance(index.type_, ts.NDIndexType):
+            return None
+        dim = self.visit(node.slice)
+        if not isinstance(dim, concepts.Dimension):
+            return None
+        return hlast.Extract(loc, ts.index_t, index, dim)
+
+    def _visit_subscript_jump(self, node: ast.Subscript):
+        loc = self.get_ast_loc(node)
+        index = self.visit(node.value)
+        if not isinstance(index, hlast.Expr):
+            return None
+        if not isinstance(index.type_, ts.NDIndexType):
+            return None
+        offset = self.visit(node.slice)
+        if isinstance(offset, hlast.TupleCreate):
+            offset_list = offset.elements
+        else:
+            offset_list = [offset]
+        if not all(isinstance(o, hlast.Size) for o in offset_list):
+            return None
+        offset_dict: dict[concepts.Dimension, int] = {}
+        for o in offset_list:
+            assert isinstance(o, hlast.Size)
+            if not isinstance(o.size, hlast.Constant) or not isinstance(o.size.type_, (ts.IndexType, ts.IntegerType)):
+                raise CompilationError(o.size.location, "expected integer literal expression")
+            offset_dict[o.dimension] = o.size.value
+        return hlast.Jump(loc, index.type_, index, offset_dict)
+
+
+    def visit_Subscript(self, node: ast.Subscript) -> Any:
+        expr = self._visit_subscript_size(node)
+        if expr: return expr
+        expr = self._visit_subscript_slice(node)
+        if expr: return expr
+        expr = self._visit_subscript_tuple_extract(node)
+        if expr: return expr
+        expr = self._visit_subscript_sample(node)
+        if expr: return expr
+        expr = self._visit_subscript_extract_slice(node)
+        if expr: return expr
+        expr = self._visit_subscript_extract_index(node)
+        if expr: return expr
+        expr = self._visit_subscript_jump(node)
+        if expr: return expr
+
+        loc = self.get_ast_loc(node)
+        raise CompilationError(loc, "invalid subscript")
 
     def visit_Expr(self, node: ast.Expr) -> Any:
         return self.visit(node.value)
@@ -561,12 +633,6 @@ class AstTransformer(ast.NodeTransformer):
             return self.instantiations[mangled_name]
         return None
 
-    def _visit_getitem_expr(self, node: ast.AST):
-        if isinstance(node, ast.Tuple):
-            return tuple(self.visit(element) for element in node.elts)
-        slices = self.visit(node)
-        return slices if isinstance(slices, tuple) else (slices,)
-
     def _process_closure_value(self, value: Any, location: concepts.Location) -> Any:
         # Stencils, functions
         if isinstance(value, (concepts.Function, concepts.Stencil)):
@@ -594,4 +660,4 @@ class AstTransformer(ast.NodeTransformer):
 
     def _promote_to_slice(self, size: hlast.Size) -> hlast.Slice:
         lower = size.size
-        return hlast.Slice(size.dimension, lower, None, None, True)
+        return hlast.Slice(size.location, ts.index_t, size.dimension, lower, None, None, True)

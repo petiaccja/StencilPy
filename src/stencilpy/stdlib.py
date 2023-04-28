@@ -217,10 +217,11 @@ def _remap_domain(source: storage.Field | hlast.Expr, conn: storage.Connectivity
     assert isinstance(conn_type, ts.ConnectivityType)
     src_dims = list(set(src_type.dimensions) - {conn_type.neighbor_dimension})
     if transformer:
-        return (
+        sizes = [
             *[hlast.Size(loc, ts.index_t, dim, hlast.Shape(loc, ts.index_t, source, dim)) for dim in src_dims],
             *[hlast.Size(loc, ts.index_t, dim, hlast.Shape(loc, ts.index_t, conn, dim)) for dim in conn_type.dimensions],
-        )
+        ]
+        return hlast.TupleCreate(loc, ts.TupleType([ts.index_t]*len(sizes)), sizes)
     else:
         return (
             *[concepts.Slice(dim, source.shape[dim]) for dim in src_dims],
@@ -250,9 +251,11 @@ def _sparsity_domain(conn: storage.Connectivity | hlast.Expr, transformer=None):
     conn_type = stencilpy.metalib.typeof(conn, transformer=transformer)
     assert isinstance(conn_type, ts.ConnectivityType)
     if transformer:
-        return (
-            *[hlast.Size(loc, ts.index_t, dim, hlast.Shape(loc, ts.index_t, conn, dim)) for dim in conn_type.dimensions],
-        )
+        sizes = [
+            hlast.Size(loc, ts.index_t, dim, hlast.Shape(loc, ts.index_t, conn, dim))
+            for dim in conn_type.dimensions
+        ]
+        return hlast.TupleCreate(loc, ts.TupleType([ts.index_t] * len(sizes)), sizes)
     else:
         return (
             *[concepts.Slice(dim, conn.shape[dim]) for dim in conn_type.dimensions],
@@ -286,12 +289,11 @@ def _reduce_domain(field: storage.Field | hlast.Expr, transformer=None):
     else:
         assert isinstance(field, hlast.Expr)
         assert isinstance(field.type_, ts.FieldType)
-        return (
-            *[
-                hlast.Size(loc, ts.index_t, d, hlast.Shape(loc, ts.index_t, field, d))
-                for d in field.type_.dimensions if d != dim
-            ],
-        )
+        sizes = [
+            hlast.Size(loc, ts.index_t, d, hlast.Shape(loc, ts.index_t, field, d))
+            for d in field.type_.dimensions if d != dim
+        ]
+        return hlast.TupleCreate(loc, ts.TupleType([ts.index_t]*len(sizes)), sizes)
 
 @stencilpy.run.stencil
 def _sn_reduce(field: storage.Field):
