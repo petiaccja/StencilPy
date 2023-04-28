@@ -286,28 +286,27 @@ class AstTransformer(ast.NodeTransformer):
             rhs = hlast.Cast(loc, type_, args[1], type_)
             return hlast.ArithmeticOperation(loc, type_, lhs, rhs, func)
 
-        lhs_type = ensure_type(lhs, (ts.FieldType, ts.NumberType))
-        rhs_type = ensure_type(rhs, (ts.FieldType, ts.NumberType))
-        is_lhs_field = isinstance(lhs_type, ts.FieldType)
-        is_rhs_field = isinstance(rhs_type, ts.FieldType)
-        lhs_element_type = lhs_type.element_type if is_lhs_field else lhs.type_
-        rhs_element_type = rhs_type.element_type if is_rhs_field else rhs.type_
-        lhs_dimensions = lhs_type.dimensions if is_lhs_field else []
-        rhs_dimensions = rhs_type.dimensions if is_rhs_field else []
-        if is_lhs_field or is_rhs_field:
-            element_type = type_traits.common_type(lhs_element_type, rhs_element_type)
-            if not element_type:
-                raise ArgumentCompatibilityError(loc, "binop", [lhs_type, rhs_type])
-            dimensions = sorted(list(set(lhs_dimensions) | set(rhs_dimensions)))
-            type_ = ts.FieldType(element_type, dimensions)
+        arg_types = [lhs.type_, rhs.type_]
+        element_types = [type_traits.element_type(ty) for ty in arg_types]
+        common_ty = type_traits.common_type(*element_types)
+        common_dims = type_traits.common_dims(*arg_types)
+
+        if not common_ty:
+            raise ArgumentCompatibilityError(loc, "binop", arg_types)
+
+        if common_dims:
+            type_ = ts.FieldType(common_ty, common_dims)
             return hlast.ElementwiseOperation(loc, type_, [lhs, rhs], builder)
-        else:
-            return builder([lhs, rhs])
+        return builder([lhs, rhs])
 
     def visit_Compare(self, node: ast.Compare) -> Any:
         loc = self.get_ast_loc(node)
         operands = [ensure_expr(self.visit(operand), loc=loc) for operand in [node.left, *node.comparators]]
         funcs = [self.visit(op) for op in node.ops]
+
+        arg_types = [ensure_type(arg, (ts.FieldType, ts.NumberType)) for arg in operands]
+        common_dims = type_traits.common_dims(*arg_types)
+        result_ty = ts.bool_t
 
         def builder(args: list[hlast.Expr]) -> hlast.Expr:
             args_names = [f"__cmp_operand{i}" for i in range(len(args))]
@@ -322,9 +321,9 @@ class AstTransformer(ast.NodeTransformer):
                 func = funcs[i]
                 lhs = args_refs[i]
                 rhs = args_refs[i + 1]
-                type_ = type_traits.common_type(lhs.type_, rhs.type_)
-                lhs = hlast.Cast(loc, type_, lhs, type_)
-                rhs = hlast.Cast(loc, type_, rhs, type_)
+                common_ty = type_traits.common_type(lhs.type_, rhs.type_)
+                lhs = hlast.Cast(loc, common_ty, lhs, common_ty)
+                rhs = hlast.Cast(loc, common_ty, rhs, common_ty)
                 cmp = hlast.ComparisonOperation(loc, ts.bool_t, lhs, rhs, func)
                 expr = hlast.If(
                     loc, ts.bool_t, cmp,
@@ -337,18 +336,8 @@ class AstTransformer(ast.NodeTransformer):
                 [hlast.Yield(loc, ts.bool_t, c_false)]
             )
 
-        arg_types = [ensure_type(arg, (ts.FieldType, ts.NumberType)) for arg in operands]
-        operand_dimensions = [
-            t.dimensions if isinstance(t, ts.FieldType) else []
-            for t in arg_types
-        ]
-        if any(isinstance(t, ts.FieldType) for t in arg_types):
-            element_type = ts.IntegerType(1, False)
-            merged_dims = set()
-            for dims in operand_dimensions:
-                merged_dims = merged_dims | set(dims)
-            dimensions = sorted(list(merged_dims))
-            type_ = ts.FieldType(element_type, dimensions)
+        if common_dims:
+            type_ = ts.FieldType(result_ty, common_dims)
             return hlast.ElementwiseOperation(loc, type_, operands, builder)
         else:
             return builder(operands)
@@ -357,7 +346,7 @@ class AstTransformer(ast.NodeTransformer):
         loc = self.get_ast_loc(node)
         value = ensure_expr(self.visit(node.operand), loc=loc)
         value_type = ensure_type(value, (ts.FieldType, ts.NumberType))
-        element_type = value_type.element_type if isinstance(value_type, ts.FieldType) else value_type
+        element_type = type_traits.element_type(value_type)
         if isinstance(node.op, ast.UAdd):
             return value
         elif isinstance(node.op, ast.USub):

@@ -1,11 +1,13 @@
 import copy
+import numpy as np
 
 from stencilpy import concepts
-from typing import Optional, Any
+from typing import Optional, Any, Callable
 from stencilpy import storage
 from stencilpy.compiler import types as ts, hlast, type_traits
 import stencilpy.run
 import stencilpy.metalib
+import stencilpy.utility
 
 
 @concepts.builtin
@@ -52,6 +54,138 @@ def extend(
     exchanged = copy.deepcopy(index)
     exchanged.values[dim] = value
     return exchanged
+
+
+#---------------------------------------
+# Math
+#---------------------------------------
+
+# List of functions: https://en.cppreference.com/w/c/numeric/math
+
+# Exponential
+@concepts.builtin
+def exp(x: Any):
+    return storage.elementwise_op(np.exp, x)
+
+
+@concepts.builtin
+def exp2(x: Any):
+    return storage.elementwise_op(np.exp2, x)
+
+
+@concepts.builtin
+def expm1(x: Any):
+    return storage.elementwise_op(np.expm1, x)
+
+
+@concepts.builtin
+def log(x: Any):
+    return storage.elementwise_op(np.log, x)
+
+
+@concepts.builtin
+def log10(x: Any):
+    return storage.elementwise_op(np.log10, x)
+
+
+@concepts.builtin
+def log2(x: Any):
+    return storage.elementwise_op(np.log2, x)
+
+
+@concepts.builtin
+def log1p(x: Any):
+    return storage.elementwise_op(np.log1p, x)
+
+
+# Power
+@concepts.builtin
+def pow(x: Any, y: Any):
+    return storage.elementwise_op(np.power, x, y)
+
+
+@concepts.builtin
+def sqrt(x: Any):
+    return storage.elementwise_op(np.sqrt, x)
+
+
+@concepts.builtin
+def cbrt(x: Any):
+    return storage.elementwise_op(np.cbrt, x)
+
+
+@concepts.builtin
+def hypot(x: Any, y: Any):
+    return storage.elementwise_op(np.hypot, x, y)
+
+
+# Trigonometric
+@concepts.builtin
+def sin(x: Any):
+    return storage.elementwise_op(np.sin, x)
+
+
+@concepts.builtin
+def cos(x: Any):
+    return storage.elementwise_op(np.cos, x)
+
+
+@concepts.builtin
+def tan(x: Any):
+    return storage.elementwise_op(np.tan, x)
+
+
+@concepts.builtin
+def asin(x: Any):
+    return storage.elementwise_op(np.arcsin, x)
+
+
+@concepts.builtin
+def acos(x: Any):
+    return storage.elementwise_op(np.arccos, x)
+
+
+@concepts.builtin
+def atan(x: Any):
+    return storage.elementwise_op(np.arctan, x)
+
+
+@concepts.builtin
+def atan2(x: Any, y: Any):
+    return storage.elementwise_op(np.arctan2, x, y)
+
+
+# Hyperbolic
+@concepts.builtin
+def sinh(x: Any):
+    return storage.elementwise_op(np.sinh, x)
+
+
+@concepts.builtin
+def cosh(x: Any):
+    return storage.elementwise_op(np.cosh, x)
+
+
+@concepts.builtin
+def tanh(x: Any):
+    return storage.elementwise_op(np.tanh, x)
+
+
+@concepts.builtin
+def asinh(x: Any):
+    return storage.elementwise_op(np.arcsinh, x)
+
+
+@concepts.builtin
+def acosh(x: Any):
+    return storage.elementwise_op(np.arccosh, x)
+
+
+@concepts.builtin
+def atanh(x: Any):
+    return storage.elementwise_op(np.arctanh, x)
+
+
 
 #---------------------------------------
 # Remap

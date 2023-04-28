@@ -4,6 +4,7 @@ from typing import Any, Sequence, Optional
 import numpy as np
 from numpy import typing as np_typing
 
+from stencilpy import concepts
 from stencilpy import storage, utility
 from stencilpy.compiler import types as ts
 
@@ -54,6 +55,7 @@ def to_numpy_type(type_: ts.Type) -> np_typing.DTypeLike:
             if type_.width == 16: return np.float16
             if type_.width == 32: return np.float32
             if type_.width == 64: return np.float64
+            if type_.width == 128: return np.float128
     if isinstance(type_, ts.IndexType):
         if ctypes.sizeof(ctypes.c_void_p) == 4: return np.int32
         if ctypes.sizeof(ctypes.c_void_p) == 8: return np.int64
@@ -111,3 +113,14 @@ def common_type(*types: ts.Type) -> Optional[ts.Type]:
         if all(is_convertible(source, target) for source in types):
             return target
     return None
+
+
+def common_dims(*types: ts.Type) -> list[concepts.Dimension]:
+    dims = utility.flatten(ty.dimensions if isinstance(ty, ts.FieldLikeType) else [] for ty in types)
+    return list(sorted(set(dims)))
+
+
+def element_type(ty: ts.Type):
+    if isinstance(ty, ts.FieldLikeType):
+        return ty.element_type
+    return ty

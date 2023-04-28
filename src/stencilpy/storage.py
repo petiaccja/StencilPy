@@ -5,6 +5,7 @@ from typing import Callable, Any
 import numpy as np
 
 from stencilpy import concepts
+from stencilpy import utility
 
 
 def merge_dims(
@@ -23,6 +24,22 @@ def broadcast_shape(
         shape[dims.index(dim)] if dim in dims else 1
         for dim in broadcast_dims
     )
+
+
+def elementwise_op(op: Callable, *args) -> "Field":
+    all_dims = [arg.sorted_dimensions for arg in args if isinstance(arg, Field)]
+    common_dims = list(sorted(set(utility.flatten(all_dims))))
+    reshaped = [
+        (
+            np.reshape(arg.data, broadcast_shape(arg.sorted_dimensions, common_dims, arg.data.shape))
+            if isinstance(arg, Field)
+            else arg
+        )
+        for arg in args
+    ]
+    if common_dims:
+        return Field(common_dims, op(*reshaped))
+    return op(*reshaped)
 
 
 @dataclasses.dataclass
@@ -72,45 +89,29 @@ class Field(FieldLike):
             return self._extract_slice(slices)
         raise TypeError(f"cannot subscript field with object of type {type(slices)}")
 
-    @staticmethod
-    def _elementwise_op(lhs: Any, rhs: Any, op: Callable[[np.ndarray, np.ndarray], np.ndarray]) -> "Field":
-        if isinstance(lhs, Field) and isinstance(rhs, Field):
-            bcast_dims = merge_dims(lhs.sorted_dimensions, rhs.sorted_dimensions)
-            self_new_shape = broadcast_shape(lhs.sorted_dimensions, bcast_dims, lhs.data.shape)
-            other_new_shape = broadcast_shape(rhs.sorted_dimensions, bcast_dims, rhs.data.shape)
-            self_reshaped = np.reshape(lhs.data, self_new_shape)
-            other_reshaped = np.reshape(rhs.data, other_new_shape)
-            return Field(bcast_dims, op(self_reshaped, other_reshaped))
-        elif isinstance(lhs, Field):
-            return Field(lhs.sorted_dimensions, op(lhs.data, rhs))
-        elif isinstance(rhs, Field):
-            return Field(rhs.sorted_dimensions, op(lhs, rhs.data))
-        else:
-            raise TypeError("expected field type for either lhs or rhs")
-
     def __add__(self, other: "Field") -> "Field":
-        return self._elementwise_op(self, other, lambda x, y: x + y)
+        return elementwise_op(lambda x, y: x + y, self, other)
 
     def __sub__(self, other: "Field") -> "Field":
-        return self._elementwise_op(self, other, lambda x, y: x - y)
+        return elementwise_op(lambda x, y: x - y, self, other)
 
     def __mul__(self, other: "Field") -> "Field":
-        return self._elementwise_op(self, other, lambda x, y: x * y)
+        return elementwise_op(lambda x, y: x * y, self, other)
 
     def __truediv__(self, other: "Field") -> "Field":
-        return self._elementwise_op(self, other, lambda x, y: x / y)
+        return elementwise_op(lambda x, y: x / y, self, other)
 
     def __radd__(self, other: "Field") -> "Field":
-        return self._elementwise_op(other, self, lambda x, y: x + y)
+        return elementwise_op(lambda x, y: x + y, other, self)
 
     def __rsub__(self, other: "Field") -> "Field":
-        return self._elementwise_op(other, self, lambda x, y: x - y)
+        return elementwise_op(lambda x, y: x - y, other, self)
 
     def __rmul__(self, other: "Field") -> "Field":
-        return self._elementwise_op(other, self, lambda x, y: x * y)
+        return elementwise_op(lambda x, y: x * y, other, self)
 
     def __rtruediv__(self, other: "Field") -> "Field":
-        return self._elementwise_op(other, self, lambda x, y: x / y)
+        return elementwise_op(lambda x, y: x / y, other, self)
 
 
 class Connectivity(FieldLike):

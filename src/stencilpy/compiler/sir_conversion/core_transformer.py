@@ -437,12 +437,16 @@ class CoreTransformer(SirOpTransformer):
         name = shape_func_name(node.name)
 
         arg_types = type_traits.flatten(ts.TupleType([arg.type_ for arg in node.args]))
+        results = type_traits.flatten(node.type_) if not isinstance(node.type_, ts.VoidType) else []
+
+        if all(not isinstance(result, ts.FieldLikeType) for result in results):
+            return []
+
         index_args = flatten_recursive(
             self._get_shape_or_empty(arg, type_, loc) if isinstance(type_, ts.FieldLikeType) else arg
             for arg, type_ in zip(args, arg_types)
         )
 
-        results = type_traits.flatten(node.type_) if not isinstance(node.type_, ts.VoidType) else []
         index_results = flatten_recursive([
             [ts.index_t]*len(t.dimensions) if isinstance(t, ts.FieldLikeType) else  []
             for t in results

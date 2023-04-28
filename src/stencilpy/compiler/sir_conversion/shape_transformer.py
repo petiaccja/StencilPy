@@ -37,6 +37,10 @@ class ShapeTransformer(SirOpTransformer):
     def visit_Function(self, node: hlast.Function) -> list[ops.Value]:
         loc = as_sir_loc(node.location)
 
+        assert isinstance(node.type_, ts.FunctionType)
+        if all(not isinstance(ty, ts.FieldLikeType) for ty in type_traits.flatten(node.type_.result)):
+            return []
+
         name = shape_func_name(node.name)
         internal_name = "__internal" + name
         internal_function_type = self._get_function_type(node, False)

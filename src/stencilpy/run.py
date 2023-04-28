@@ -73,6 +73,8 @@ def _get_result_shapes(
         module: sir.CompiledModule,
         args: Sequence[Any]
 ) -> list[tuple]:
+    if all(not isinstance(ty, ts.FieldLikeType) for ty in result_types):
+        return []
     translated_args = _translate_shape_args(args)
     flat_shapes = module.invoke(sir_conversion.shape_func_name(mangled_name), *translated_args)
     if flat_shapes and not isinstance(flat_shapes, Sequence):
@@ -142,7 +144,13 @@ class JitFunction:
         return self.definition(*args, **kwargs) if not use_jit else self.call_jit(*args, **kwargs)
 
     def call_jit(self, *args, **kwargs):
-        optimizations = sir.OptimizationOptions(True, True, True, True)
+        optimizations = sir.OptimizationOptions(
+            inline_functions=True,
+            fuse_extract_slice_ops=True,
+            fuse_apply_ops=True,
+            eliminate_alloc_buffers=True,
+            enable_runtime_verification=True
+        )
         compile_options = sir.CompileOptions(sir.TargetArch.X86, sir.OptimizationLevel.O3, optimizations)
 
         arg_types = [type_traits.from_object(arg) for arg in args]
@@ -161,17 +169,7 @@ class JitFunction:
 
     def get_compiled_module(self, arg_types: Sequence[ts.Type], options: sir.CompileOptions):
         mangled_name = cutil.mangle_name(cutil.get_qualified_name(self.definition), arg_types)
-        key = (
-            mangled_name,
-            (
-                options.target_arch,
-                options.opt_level,
-                options.opt_options.inline_functions,
-                options.opt_options.fuse_extract_slice_ops,
-                options.opt_options.fuse_apply_ops,
-                options.opt_options.eliminate_alloc_buffers,
-            )
-        )
+        key = (mangled_name, options)
         if key not in self.runtime_cache:
             function_type, compiled_module = JitFunction.compile(self.definition, arg_types, options)
             self.runtime_cache[key] = (function_type, compiled_module)

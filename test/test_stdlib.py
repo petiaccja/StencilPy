@@ -1,8 +1,13 @@
+import math
+import random
+
+import stdlib
 from stencilpy.stdlib import *
 from .config import use_jit
 from stencilpy.concepts import *
 from stencilpy.storage import *
 from stencilpy.run import func, stencil
+import pytest
 
 TDim = concepts.Dimension()
 UDim = concepts.Dimension()
@@ -139,3 +144,69 @@ def test_reduce(use_jit):
     assert isinstance(r, Field)
     assert r.sorted_dimensions == [UDim]
     assert np.allclose(r.data, expected)
+
+
+def math_fun_range(fun: concepts.Builtin):
+    if fun == stdlib.acosh:
+        return 1, 2
+    return 0, 1
+
+
+@pytest.mark.parametrize("math_func,verify_func", [
+    # Exponential
+    (stdlib.exp, np.exp),
+    (stdlib.exp2, np.exp2),
+    (stdlib.expm1, np.expm1),
+    (stdlib.log, np.log),
+    (stdlib.log10, np.log10),
+    (stdlib.log2, np.log2),
+    (stdlib.log1p, np.log1p),
+    # Power
+    (stdlib.sqrt, np.sqrt),
+    (stdlib.cbrt, np.cbrt),
+    # Trigonometric
+    (stdlib.sin, np.sin),
+    (stdlib.cos, np.cos),
+    (stdlib.tan, np.tan),
+    (stdlib.asin, np.arcsin),
+    (stdlib.acos, np.arccos),
+    (stdlib.atan, np.arctan),
+    # Hyperbolic
+    (stdlib.sinh, np.sinh),
+    (stdlib.cosh, np.cosh),
+    (stdlib.tanh, np.tanh),
+    (stdlib.asinh, np.arcsinh),
+    (stdlib.acosh, np.arccosh),
+    (stdlib.atanh, np.arctanh),
+])
+def test_math_builtins_unary(use_jit, math_func, verify_func):
+    @func
+    def fn(arg):
+        return math_func(arg)
+
+    lr, ur = math_fun_range(math_func)
+    s = random.uniform(lr, ur)
+    f = Field([TDim, UDim], np.random.uniform(lr, ur, size=(5, 6)))
+
+    assert math.isclose(fn(s, jit=use_jit), verify_func(s))
+    assert np.allclose(fn(f, jit=use_jit).data, verify_func(f.data))\
+
+
+@pytest.mark.parametrize("math_func,verify_func", [
+    (stdlib.atan2, np.arctan2),
+    (stdlib.pow, np.power),
+    (stdlib.hypot, np.hypot),
+])
+def test_math_builtins_binary(use_jit, math_func, verify_func):
+    @func
+    def fn(arg0, arg1):
+        return math_func(arg0, arg1)
+
+    lr, ur = math_fun_range(math_func)
+    s0 = random.uniform(lr, ur)
+    s1 = random.uniform(lr, ur)
+    f0 = Field([TDim, UDim], np.random.uniform(lr, ur, size=(5, 6)))
+    f1 = Field([TDim, UDim], np.random.uniform(lr, ur, size=(5, 6)))
+
+    assert math.isclose(fn(s0, s1, jit=use_jit), verify_func(s0, s1))
+    assert np.allclose(fn(f0, f1, jit=use_jit).data, verify_func(f0.data, f1.data))

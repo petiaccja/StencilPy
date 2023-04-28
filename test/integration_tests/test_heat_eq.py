@@ -21,22 +21,24 @@ def laplacian(u: Field) -> Field:
 
 
 @stencil
-def _sn_add_boundaries(central: Field, x_size: int, y_size: int) -> Field:
+def _sn_inject_boundaries(central: Field, x_size: int, y_size: int) -> Field:
     idx = index()
     elem_t = element_type(typeof(central))
     if 0 < idx[XDim] <= x_size and 0 < idx[YDim] <= y_size:
         offset = idx[XDim[-1], YDim[-1]]
         return central[offset]
     elif idx[XDim] == 0:
-        return cast(1.0, elem_t)
+        x = cast(idx[YDim], elem_t)
+        scale = cast(0.4, elem_t)
+        return sin(scale * x)
     return cast(0.0, elem_t)
 
 
 @func
-def add_boundaries(central: Field) -> Field:
+def inject_boundaries(central: Field) -> Field:
     x_size = shape(central, XDim)
     y_size = shape(central, YDim)
-    return _sn_add_boundaries[XDim[x_size + 2], YDim[y_size + 2]](central, x_size, y_size)
+    return _sn_inject_boundaries[XDim[x_size + 2], YDim[y_size + 2]](central, x_size, y_size)
 
 
 @func
@@ -44,7 +46,7 @@ def timestep(u: Field, step: float) -> Field:
     dudt = laplacian(u)
     central = u[XDim[1:-1], YDim[1:-1]]
     updated = central - step * dudt
-    return add_boundaries(updated)
+    return inject_boundaries(updated)
 
 
 def test_heat_eq():
