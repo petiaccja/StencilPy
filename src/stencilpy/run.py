@@ -119,6 +119,19 @@ def _match_results_to_outs(results: Any, out_args: tuple) -> Any:
     return matched[0] if len(matched) == 1 else tuple(matched)
 
 
+def _cast_results(results: Any, result_types: Sequence) -> Any:
+    def do_cast(value, type_):
+        if not isinstance(value, storage.FieldLike):
+            return type_traits.to_numpy_type(type_)(value)
+        return value
+    if isinstance(result_types[0], ts.VoidType):
+        return None
+    if not isinstance(results, Sequence):
+        return do_cast(results, *result_types)
+    return [do_cast(result, type_) for result, type_ in zip(results, result_types)]
+
+
+
 #-------------------------------------------------------------------------------
 # Parsing
 #-------------------------------------------------------------------------------
@@ -163,9 +176,10 @@ class JitFunction:
         translated_out_args = [_translate_regular_arg(arg) for arg in out_args]
         results = compiled_module.invoke(mangled_name, *translated_args, *translated_out_args)
         matched = _match_results_to_outs(results, out_args)
-        if not isinstance(matched, Sequence):
-            return matched
-        return type_traits.unflatten(matched, function_type.result)
+        casted = _cast_results(matched, type_traits.flatten(function_type.result))
+        if not isinstance(casted, Sequence):
+            return casted
+        return type_traits.unflatten(casted, function_type.result)
 
     def get_compiled_module(self, arg_types: Sequence[ts.Type], options: sir.CompileOptions):
         mangled_name = cutil.mangle_name(cutil.get_qualified_name(self.definition), arg_types)

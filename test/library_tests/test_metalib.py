@@ -1,6 +1,6 @@
 from stencilpy.stdlib import *
 from stencilpy.metalib import *
-from .config import use_jit
+from config import use_jit
 from stencilpy.concepts import *
 from stencilpy.storage import *
 from stencilpy.run import func, stencil

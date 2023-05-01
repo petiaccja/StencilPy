@@ -289,7 +289,7 @@ class AstTransformer(ast.NodeTransformer):
             arg_types = [arg.type_ for arg in args]
             type_ = type_traits.common_type(*arg_types)
             if not type_:
-                raise ArgumentCompatibilityError(loc, f"arith:{str(func)}", arg_types)
+                raise ArgumentCompatibilityError(loc, f"arithmetic:{str(func)}", arg_types)
             lhs = hlast.Cast(loc, type_, args[0], type_)
             rhs = hlast.Cast(loc, type_, args[1], type_)
             return hlast.ArithmeticOperation(loc, type_, lhs, rhs, func)
@@ -300,7 +300,7 @@ class AstTransformer(ast.NodeTransformer):
         common_dims = type_traits.common_dims(*arg_types)
 
         if not common_ty:
-            raise ArgumentCompatibilityError(loc, "binop", arg_types)
+            raise ArgumentCompatibilityError(loc, f"arithmetic:{str(func)}", arg_types)
 
         if common_dims:
             type_ = ts.FieldType(common_ty, common_dims)
@@ -330,6 +330,8 @@ class AstTransformer(ast.NodeTransformer):
                 lhs = args_refs[i]
                 rhs = args_refs[i + 1]
                 common_ty = type_traits.common_type(lhs.type_, rhs.type_)
+                if not common_ty:
+                    raise ArgumentCompatibilityError(loc, f"comparison.{str(func)}", [lhs.type_, rhs.type_])
                 lhs = hlast.Cast(loc, common_ty, lhs, common_ty)
                 rhs = hlast.Cast(loc, common_ty, rhs, common_ty)
                 cmp = hlast.ComparisonOperation(loc, ts.bool_t, lhs, rhs, func)
@@ -355,34 +357,56 @@ class AstTransformer(ast.NodeTransformer):
         value = ensure_expr(self.visit(node.operand), loc=loc)
         value_type = ensure_type(value, (ts.FieldType, ts.NumberType))
         element_type = type_traits.element_type(value_type)
-        if isinstance(node.op, ast.UAdd):
-            return value
-        elif isinstance(node.op, ast.USub):
+
+        def builder_plus(values: list[hlast.Expr]):
+            return values[0]
+
+        def builder_minus(values: list[hlast.Expr]):
+            value = values[0]
+            if isinstance(element_type, ts.IntegerType) and element_type.width == 1:
+                raise ArgumentCompatibilityError(loc, "unary minus", [element_type])
             if isinstance(value, hlast.Constant):
-                value.value = -value.value
-                return value
-            sign_val = -1.0 if isinstance(element_type, ts.FloatType) else -1
-            c_sign = hlast.Constant(loc, element_type, sign_val)
-            return hlast.ArithmeticOperation(loc, value_type, c_sign, value, hlast.ArithmeticFunction.MUL)
-        elif isinstance(node.op, ast.Invert):
-            if isinstance(value, hlast.Constant):
-                value.value = ~value.value
-                return value
+                return hlast.Constant(value.location, value.type_, -value.value)
+            sign_value = -1.0 if isinstance(element_type, ts.FloatType) else -1
+            sign_expr = hlast.Constant(loc, element_type, sign_value)
+            return hlast.ArithmeticOperation(loc, element_type, sign_expr, value, hlast.ArithmeticFunction.MUL)
+
+        def builder_invert(values: list[hlast.Expr]):
+            value = values[0]
             if not isinstance(element_type, (ts.IndexType, ts.IntegerType)):
                 raise ArgumentCompatibilityError(loc, "bit inversion", [element_type])
-            c_bitmask = hlast.Constant(loc, element_type, -1)
-            return hlast.ArithmeticOperation(loc, value_type, c_bitmask, value, hlast.ArithmeticFunction.BIT_XOR)
-        elif isinstance(node.op, ast.Not):
             if isinstance(value, hlast.Constant):
-                value.value = not value.value
-                return value
-            bool_t = ts.IntegerType(1, True)
-            compare_val = 0.0 if isinstance(element_type, ts.FloatType) else 0
-            c_compare = hlast.Constant(loc, element_type, compare_val)
-            c_bitmask = hlast.Constant(loc, element_type, 1)
-            boolified = hlast.ComparisonOperation(loc, bool_t, value, c_compare, hlast.ComparisonFunction.NEQ)
-            return hlast.ArithmeticOperation(loc, bool_t, c_bitmask, boolified, hlast.ArithmeticFunction.BIT_XOR)
-        raise CompilationError(loc, f"unary operator {type(node.op)} not implemented")
+                return hlast.Constant(value.location, value.type_, ~value.value)
+            c_bitmask = hlast.Constant(loc, element_type, -1)
+            return hlast.ArithmeticOperation(loc, element_type, c_bitmask, value, hlast.ArithmeticFunction.BIT_XOR)
+
+        def builder_not(values: list[hlast.Expr]):
+            value = values[0]
+            if isinstance(value, hlast.Constant):
+                return hlast.Constant(value.location, ts.bool_t, not value.value)
+            compare_value = 0.0 if isinstance(element_type, ts.FloatType) else 0
+            compare_expr = hlast.Constant(loc, element_type, compare_value)
+            return hlast.ComparisonOperation(loc, ts.bool_t, value, compare_expr, hlast.ComparisonFunction.EQ)
+
+        if isinstance(node.op, ast.UAdd):
+            builder = builder_plus
+            result_ty = element_type
+        elif isinstance(node.op, ast.USub):
+            builder = builder_minus
+            result_ty = element_type
+        elif isinstance(node.op, ast.Invert):
+            builder = builder_invert
+            result_ty = element_type
+        elif isinstance(node.op, ast.Not):
+            builder = builder_not
+            result_ty = ts.bool_t
+        else:
+            raise CompilationError(loc, f"unary operator {type(node.op)} not implemented")
+
+        if isinstance(value_type, ts.FieldType):
+            ty = ts.FieldType(result_ty, list(value_type.dimensions))
+            return hlast.ElementwiseOperation(loc, ty, [value], builder)
+        return builder([value])
 
     def visit_BoolOp(self, node: ast.BoolOp) -> hlast.Expr:
         loc = self.get_ast_loc(node)
@@ -465,15 +489,18 @@ class AstTransformer(ast.NodeTransformer):
 
     def _visit_subscript_sample(self, node: ast.Subscript):
         loc = self.get_ast_loc(node)
-        value = self.visit(node.value)
-        if not isinstance(value, hlast.Expr):
+        source = self.visit(node.value)
+        if not isinstance(source, hlast.Expr):
             return None
-        if not isinstance(value.type_, ts.FieldLikeType):
+        if not isinstance(source.type_, ts.FieldLikeType):
             return None
         index = ensure_expr(self.visit(node.slice))
         if not isinstance(index.type_, ts.NDIndexType):
             return None
-        return hlast.Sample(loc, value.type_.element_type, value, index)
+        for dim in source.type_.dimensions:
+            if dim not in index.type_.dims:
+                raise CompilationError(loc, f"dimension `{dim}` is present in the source, but not in the index")
+        return hlast.Sample(loc, source.type_.element_type, source, index)
 
     def _visit_subscript_extract_slice(self, node: ast.Subscript):
         loc = self.get_ast_loc(node)

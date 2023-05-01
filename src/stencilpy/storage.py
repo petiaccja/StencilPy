@@ -29,17 +29,18 @@ def broadcast_shape(
 def elementwise_op(op: Callable, *args) -> "Field":
     all_dims = [arg.sorted_dimensions for arg in args if isinstance(arg, Field)]
     common_dims = list(sorted(set(utility.flatten(all_dims))))
-    reshaped = [
-        (
-            np.reshape(arg.data, broadcast_shape(arg.sorted_dimensions, common_dims, arg.data.shape))
-            if isinstance(arg, Field)
-            else arg
-        )
-        for arg in args
-    ]
     if common_dims:
-        return Field(common_dims, op(*reshaped))
-    return op(*reshaped)
+        reshaped = [
+            (
+                np.reshape(arg.data, broadcast_shape(arg.sorted_dimensions, common_dims, arg.data.shape))
+                if isinstance(arg, Field)
+                else np.full(shape=tuple([1]*len(common_dims)), fill_value=arg)
+            )
+            for arg in args
+        ]
+        result = Field(common_dims, op(*reshaped))
+        return result
+    return op(*args)
 
 
 @dataclasses.dataclass
@@ -89,6 +90,7 @@ class Field(FieldLike):
             return self._extract_slice(slices)
         raise TypeError(f"cannot subscript field with object of type {type(slices)}")
 
+    # Arithmetic
     def __add__(self, other: "Field") -> "Field":
         return elementwise_op(lambda x, y: x + y, self, other)
 
@@ -101,6 +103,25 @@ class Field(FieldLike):
     def __truediv__(self, other: "Field") -> "Field":
         return elementwise_op(lambda x, y: x / y, self, other)
 
+    def __mod__(self, other: "Field") -> "Field":
+        return elementwise_op(lambda x, y: x % y, self, other)
+
+    def __rshift__(self, other: "Field") -> "Field":
+        return elementwise_op(lambda x, y: x >> y, self, other)
+
+    def __lshift__(self, other: "Field") -> "Field":
+        return elementwise_op(lambda x, y: x << y, self, other)
+
+    def __and__(self, other: "Field") -> "Field":
+        return elementwise_op(lambda x, y: x & y, self, other)
+
+    def __or__(self, other: "Field") -> "Field":
+        return elementwise_op(lambda x, y: x | y, self, other)
+
+    def __xor__(self, other: "Field") -> "Field":
+        return elementwise_op(lambda x, y: x ^ y, self, other)
+
+    # Reversed arithmetic
     def __radd__(self, other: "Field") -> "Field":
         return elementwise_op(lambda x, y: x + y, other, self)
 
@@ -112,6 +133,59 @@ class Field(FieldLike):
 
     def __rtruediv__(self, other: "Field") -> "Field":
         return elementwise_op(lambda x, y: x / y, other, self)
+
+    def __rmod__(self, other: "Field") -> "Field":
+        return elementwise_op(lambda x, y: x % y, other, self)
+
+    def __rrshift__(self, other: "Field") -> "Field":
+        return elementwise_op(lambda x, y: x >> y, other, self)
+
+    def __rlshift__(self, other: "Field") -> "Field":
+        return elementwise_op(lambda x, y: x << y, other, self)
+
+    def __rand__(self, other: "Field") -> "Field":
+        return elementwise_op(lambda x, y: x & y, other, self)
+
+    def __ror__(self, other: "Field") -> "Field":
+        return elementwise_op(lambda x, y: x | y, other, self)
+
+    def __rxor__(self, other: "Field") -> "Field":
+        return elementwise_op(lambda x, y: x ^ y, other, self)
+
+    # Comparison
+    def __lt__(self, other: "Field") -> "Field":
+        return elementwise_op(lambda x, y: x < y, self, other)
+
+    def __gt__(self, other: "Field") -> "Field":
+        return elementwise_op(lambda x, y: x > y, self, other)
+
+    def __le__(self, other: "Field") -> "Field":
+        return elementwise_op(lambda x, y: x <= y, self, other)
+
+    def __ge__(self, other: "Field") -> "Field":
+        return elementwise_op(lambda x, y: x >= y, self, other)
+
+    def __eq__(self, other: "Field") -> "Field":
+        return elementwise_op(lambda x, y: x == y, self, other)
+
+    def __ne__(self, other: "Field") -> "Field":
+        return elementwise_op(lambda x, y: x != y, self, other)
+
+    def __bool__(self):
+        raise TypeError("This is not supposed to be called...")
+
+    # Unary
+    def __pos__(self):
+        return self
+
+    def __neg__(self):
+        return Field(self.sorted_dimensions, -self.data)
+
+    def __invert__(self):
+        return Field(self.sorted_dimensions, ~self.data)
+
+    def __neg__(self):
+        return Field(self.sorted_dimensions, -self.data)
 
 
 class Connectivity(FieldLike):
