@@ -1,5 +1,6 @@
 import inspect
 import ast
+import copy
 from typing import Optional, cast, Callable
 from collections.abc import Sequence
 
@@ -557,6 +558,40 @@ class AstTransformer(ast.NodeTransformer):
             offset_dict[o.dimension] = o.size.value
         return hlast.Jump(loc, index.type_, index, offset_dict)
 
+    def _visit_subscript_connect(self, node: ast.Subscript):
+        loc = self.get_ast_loc(node)
+        index = self.visit(node.value)
+        if not isinstance(index, hlast.Expr):
+            return None
+        if not isinstance(index.type_, ts.NDIndexType):
+            return None
+        slc = self.visit(node.slice)
+        if not isinstance(slc, hlast.TupleCreate):
+            return None
+        connectivity = slc.elements[0]
+        element = slc.elements[1]
+        if not isinstance(connectivity, hlast.Expr):
+            return None
+        if not isinstance(connectivity.type_, ts.ConnectivityType):
+            return None
+        origin = connectivity.type_.origin_dimension
+        neighbor = connectivity.type_.neighbor_dimension
+        local = connectivity.type_.element_dimension
+
+        local_dims = sorted([*copy.deepcopy(index.type_.dims), local])
+        local_type = ts.NDIndexType(local_dims)
+
+        new_dims = copy.deepcopy(index.type_.dims)
+        if not origin in new_dims:
+            raise CompilationError(loc, f"origin dimension {origin} not found in ND index `{index.type_}`")
+        new_dims.remove(origin)
+        new_dims.append(neighbor)
+        new_dims = sorted(new_dims)
+        type_ = ts.NDIndexType(new_dims)
+
+        extended = hlast.Extend(loc, local_type, index, element, local)
+        value = hlast.Sample(loc, connectivity.type_.element_type, connectivity, extended)
+        return hlast.Exchange(loc, type_, index, value, origin, neighbor)
 
     def visit_Subscript(self, node: ast.Subscript) -> Any:
         expr = self._visit_subscript_size(node)
@@ -572,6 +607,8 @@ class AstTransformer(ast.NodeTransformer):
         expr = self._visit_subscript_extract_index(node)
         if expr: return expr
         expr = self._visit_subscript_jump(node)
+        if expr: return expr
+        expr = self._visit_subscript_connect(node)
         if expr: return expr
 
         loc = self.get_ast_loc(node)

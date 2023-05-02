@@ -134,3 +134,20 @@ def test_extend(use_jit):
     r = fn(a, 3, jit=use_jit)
     assert np.all(e.data == r.data)
 
+
+def test_connect(use_jit):
+    @stencil
+    def sn(source, conn, i):
+        idx = index()
+        cidx = idx[conn, i]
+        return source[cidx]
+
+    @func
+    def fn(source, conn, sz):
+        return sn[UDim[sz]](source, conn, 1)
+
+    a = Field([TDim], np.array([6, 7, 8], dtype=np.float32))
+    e = Field([UDim], np.array([7, 8, 6], dtype=np.float32))
+    conn = Connectivity(UDim, TDim, LDim, np.array([[0, 1], [1, 2], [2, 0]]))
+    r = fn(a, conn, 3, jit=use_jit)
+    assert np.all(e.data == r.data)
