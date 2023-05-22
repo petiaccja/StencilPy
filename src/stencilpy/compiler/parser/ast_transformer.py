@@ -500,7 +500,7 @@ class AstTransformer(ast.NodeTransformer):
             return None
         for dim in source.type_.dimensions:
             if dim not in index.type_.dims:
-                raise CompilationError(loc, f"dimension `{dim}` is present in the source, but not in the index")
+                raise ArgumentCompatibilityError(loc, "sample", [source.type_, index.type_])
         return hlast.Sample(loc, source.type_.element_type, source, index)
 
     def _visit_subscript_extract_slice(self, node: ast.Subscript):
